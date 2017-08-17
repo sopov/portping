@@ -6,12 +6,13 @@ import (
 	"github.com/fatih/color"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
 )
 
-const ver = "1.0"
+const ver = "1.01"
 
 type stats struct {
 	IP     string
@@ -42,7 +43,12 @@ var (
 )
 
 func main() {
-	flag.BoolVar(&nocolor, "nocolor", false, "Disable color output")
+
+	if runtime.GOOS == "windows" {
+		nocolor = true
+	} else {
+		flag.BoolVar(&nocolor, "nocolor", false, "Disable color output")
+	}
 	flag.UintVar(&timeout, "t", 1000, "Timeout in milliseconds")
 	flag.UintVar(&Count, "c", 0, "Stop after connecting count times")
 	flag.BoolVar(&allowIPv6, "6", false, "Allow IPv6")
@@ -62,7 +68,7 @@ func main() {
 		"  -c uint\n" +
 		"       Stop after connecting count times\n" +
 		"  -nocolor\n" +
-		"       Disable color output\n" +
+		"       Disable color output (For Windows: always is disabled)\n" +
 		"  -t uint\n" +
 		"       Timeout in milliseconds (default 1000)\n" +
 		"\n\nportping " + ver +
