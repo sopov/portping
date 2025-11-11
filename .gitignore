@@ -1,3 +1,21 @@
+# system junk
 .DS_Store
 *.tmp
 *.swp
+
+# build artifacts
+/bin/
+/dist/
+/build/
+/*.exe
+
+# go
+coverage.*
+
+# IDE
+.vscode/
+.idea/
+
+# jekyll
+.jekyll-cache/
+_site/

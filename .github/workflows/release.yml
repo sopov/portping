@@ -1,0 +1,71 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.25.4'
+      - name: Build binaries
+        run: |
+          make dist
+      - name: Generate release body
+        id: release_body
+        run: |
+          cat > /tmp/release_body.md << 'EOF'
+          ## Downloads
+          
+          ### Linux
+          - `portping_linux_amd64` - Linux x86_64
+          - `portping_linux_arm64` - Linux ARM64
+          - `portping_linux_386` - Linux x86
+          - `portping_linux_arm` - Linux ARM
+          - `portping_linux_mips*` - Linux MIPS variants
+          - `portping_linux_ppc64*` - Linux PowerPC
+          - `portping_linux_riscv64` - Linux RISC-V
+          - `portping_linux_s390x` - Linux s390x
+          - `portping_linux_loong64` - Linux LoongArch
+          
+          ### macOS
+          - `portping_darwin_amd64` - macOS Intel
+          - `portping_darwin_arm64` - macOS Apple Silicon
+          
+          ### Windows
+          - `portping_windows_amd64.exe` - Windows x86_64
+          - `portping_windows_arm64.exe` - Windows ARM64
+          - `portping_windows_386.exe` - Windows x86
+          
+          ### FreeBSD
+          - `portping_freebsd_*` - FreeBSD variants
+          
+          ### OpenBSD
+          - `portping_openbsd_*` - OpenBSD variants
+          
+          ### NetBSD
+          - `portping_netbsd_*` - NetBSD variants
+          
+          ### DragonFly BSD
+          - `portping_dragonfly_amd64` - DragonFly BSD
+          EOF
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/release_body.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/portping_*
+          body: ${{ steps.release_body.outputs.body }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

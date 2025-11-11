@@ -1,0 +1,11 @@
+# Ignore build artifacts and source code that shouldn't be copied to _site
+*.go
+cmd/
+internal/
+dist/
+Makefile
+go.mod
+go.sum
+.github/
+.git/
+

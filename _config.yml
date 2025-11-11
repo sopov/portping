@@ -1,0 +1,50 @@
+# Jekyll config for GitHub Pages
+title: portping
+description: Fast TCP/UDP port connectivity checker - CLI network diagnostic tool
+baseurl: ""
+url: "https://ping.sopov.org"
+markdown: kramdown
+highlighter: rouge
+
+# Theme (using remote_theme for GitHub Pages compatibility)
+remote_theme: jekyll/minima
+plugins:
+  - jekyll-feed
+  - jekyll-sitemap
+  - jekyll-remote-theme
+
+# Author info
+author:
+  name: Leonid Sopov
+  url: https://www.sopov.org
+
+# GitHub Pages settings
+github: [metadata]
+
+# Files and directories to exclude from the generated site
+exclude:
+  - "*.go"
+  - "cmd"
+  - "internal"
+  - "models"
+  - "helpers"
+  - "probe"
+  - "stats"
+  - "colors"
+  - "dist"
+  - "Makefile"
+  - "go.mod"
+  - "go.sum"
+  - ".github"
+  - ".git"
+  - "Gemfile"
+  - "Gemfile.lock"
+  - "_site"
+  - "vendor"
+
+# Ensure README.md is processed when included
+include:
+  - README.md
+
+# Optional: set permalink style
+permalink: /:path/
