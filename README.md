@@ -43,12 +43,14 @@ sudo mv portping /usr/local/bin/
 git clone https://github.com/sopov/portping.git
 cd portping
 make build
+sudo mv dist/portping /usr/local/bin/
 ```
 
 Or inside Docker:
 
 ```bash
 make build-docker
+sudo mv dist/portping /usr/local/bin/
 ```
 
 ---
@@ -156,7 +158,7 @@ make dist-docker
 
 ```bash
 portping version
-# portping v1.1.0 (17b15bf, 2025-11-12T02:10:14Z)
+# portping v1.1.0 (dd70914, 2025-11-12T03:57:30Z)
 ```
 
 ---
