@@ -32,7 +32,7 @@ OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 [ "$ARCH" = "x86_64" ] && ARCH="amd64"
 [ "$ARCH" = "aarch64" ] && ARCH="arm64"
-curl -L https://github.com/sopov/portping/releases/latest/download/portping_${OS}_${ARCH} -o portping
+curl -L "https://github.com/sopov/portping/releases/latest/download/portping_${OS}_${ARCH}" -o portping
 chmod +x portping
 sudo mv portping /usr/local/bin/
 ```
