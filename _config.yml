@@ -1,4 +1,5 @@
-# Jekyll config for GitHub Pages
+# Jekyll config for GitHub Pages (built by actions/jekyll-build-pages, i.e.
+# the github-pages gem on Jekyll 3.10; keep plugins to its allow-list).
 title: portping
 description: Fast TCP/UDP port connectivity checker - CLI network diagnostic tool
 baseurl: ""
@@ -6,45 +7,34 @@ url: "https://ping.sopov.org"
 markdown: kramdown
 highlighter: rouge
 
-# Theme (using remote_theme for GitHub Pages compatibility)
-remote_theme: jekyll/minima
+# Theme pinned to a release so builds are reproducible.
+remote_theme: jekyll/minima@v2.5.1
 plugins:
   - jekyll-feed
   - jekyll-sitemap
   - jekyll-remote-theme
 
-# Author info
 author:
   name: Leonid Sopov
   url: https://www.sopov.org
 
-# GitHub Pages settings
-github: [metadata]
-
-# Files and directories to exclude from the generated site
+# Source files that must not become pages or static files.
 exclude:
   - "*.go"
   - "cmd"
   - "internal"
-  - "models"
-  - "helpers"
-  - "probe"
-  - "stats"
-  - "colors"
   - "dist"
   - "Makefile"
   - "go.mod"
   - "go.sum"
   - ".github"
   - ".git"
+  - ".golangci.yml"
+  - "AUDIT.md"
+  - "LICENSE"
   - "Gemfile"
   - "Gemfile.lock"
   - "_site"
   - "vendor"
 
-# Ensure README.md is processed when included
-include:
-  - README.md
-
-# Optional: set permalink style
 permalink: /:path/

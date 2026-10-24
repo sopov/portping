@@ -1,9 +1,6 @@
- source 'https://rubygems.org'
+source 'https://rubygems.org'
 
-gem 'jekyll', '~> 4.2'
-gem 'jekyll-remote-theme'
-gem 'jekyll-feed', '~> 0.12'
-gem 'jekyll-sitemap', '~> 1.4'
-gem 'jekyll-seo-tag', '~> 2.8'
-gem 'webrick', '~> 1.7'
-
+# Same stack as the GitHub Pages build (actions/jekyll-build-pages), so a
+# local `bundle exec jekyll serve` renders what production renders.
+gem 'github-pages', group: :jekyll_plugins
+gem 'webrick', '~> 1.8'
