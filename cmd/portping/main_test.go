@@ -9,6 +9,10 @@ import (
 	"github.com/fatih/color"
 )
 
+// usageSynopsis is the start of the usage text after the program name, which
+// is "portping" or "portping.exe" depending on the platform.
+const usageSynopsis = " [options] <destination> <port>"
+
 func run2(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	orig := color.NoColor
@@ -21,7 +25,7 @@ func run2(t *testing.T, args ...string) (code int, stdout, stderr string) {
 
 func TestRun_HelpAndVersion(t *testing.T) {
 	code, out, errOut := run2(t, "-h")
-	if code != exitOK || !strings.HasPrefix(out, "portping [options] <destination> <port>") || errOut != "" {
+	if code != exitOK || !strings.Contains(out, usageSynopsis) || !strings.Contains(out, "-nocolor") || errOut != "" {
 		t.Errorf("-h: code=%d out=%q err=%q", code, out, errOut)
 	}
 	for _, args := range [][]string{{"version"}, {"-version"}, {"--version"}} {
@@ -45,7 +49,7 @@ func TestRun_UsageErrors(t *testing.T) {
 		if code != exitUsage {
 			t.Errorf("%v: code=%d, want %d", args, code, exitUsage)
 		}
-		if out != "" || !strings.Contains(errOut, "portping [options]") {
+		if out != "" || !strings.Contains(errOut, usageSynopsis) {
 			t.Errorf("%v: usage must go to stderr only; out=%q err=%q", args, out, errOut)
 		}
 	}
@@ -56,7 +60,7 @@ func TestRun_ResolutionErrorIsRuntime(t *testing.T) {
 	if code != exitUnreached || out != "" {
 		t.Errorf("code=%d out=%q", code, out)
 	}
-	if !strings.Contains(errOut, "IPv4 address") || strings.Contains(errOut, "portping [options]") {
+	if !strings.Contains(errOut, "IPv4 address") || strings.Contains(errOut, usageSynopsis) {
 		t.Errorf("stderr = %q, want a one-line family error without usage", errOut)
 	}
 }

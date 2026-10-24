@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -326,11 +327,26 @@ func TestPingUDP_LargeReplyIsSuccess(t *testing.T) {
 	}
 }
 
+func TestPingUDP_LargePayload(t *testing.T) {
+	// 8 KiB is below every platform's default datagram limit (macOS caps
+	// UDP sends at 9216 bytes unless net.inet.udp.maxdgram is raised).
+	addr := udpServer(t, 1)
+	if _, err := PingUDP(pingOpts(context.Background(), 2*time.Second, addr, make([]byte, 8192))); err != nil {
+		t.Fatalf("PingUDP() with 8192-byte payload: %v", err)
+	}
+}
+
+// The maximum IPv4 payload must either go through or be refused cleanly by
+// the kernel with EMSGSIZE; it must never hang or be misreported.
 func TestPingUDP_MaxPayload(t *testing.T) {
 	addr := udpServer(t, 1)
-	payload := make([]byte, MaxUDPPayload)
-	if _, err := PingUDP(pingOpts(context.Background(), 2*time.Second, addr, payload)); err != nil {
-		t.Fatalf("PingUDP() with %d-byte payload: %v", MaxUDPPayload, err)
+	start := time.Now()
+	_, err := PingUDP(pingOpts(context.Background(), 2*time.Second, addr, make([]byte, MaxUDPPayload)))
+	if err != nil && !errors.Is(err, syscall.EMSGSIZE) {
+		t.Fatalf("PingUDP() with %d-byte payload: %v (want success or EMSGSIZE)", MaxUDPPayload, err)
+	}
+	if time.Since(start) > time.Second {
+		t.Errorf("oversized send took %v, expected an immediate verdict", time.Since(start))
 	}
 }
 

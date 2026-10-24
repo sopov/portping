@@ -19,7 +19,7 @@ GO_LDFLAGS  ?= -s -w \
 BUILD_CMD   ?= go build $(GOFLAGS) -ldflags "$(GO_LDFLAGS)" -o
 
 # docker
-DOCKER_IMAGE ?= golang:1.25.4-bookworm
+DOCKER_IMAGE ?= golang:1.25.10-bookworm
 GOOS         ?= $(shell go env GOOS)
 GOARCH       ?= $(shell go env GOARCH)
 DOCKER_RUN     = docker run --rm -v "$$(pwd)":/src -w /src -e CGO_ENABLED=0 $(DOCKER_IMAGE) bash -c

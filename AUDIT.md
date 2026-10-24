@@ -183,7 +183,9 @@ supply-chain weakness), **minor** (correctness or robustness defect with limited
 - A hex payload longer than 65 507 bytes decodes fine and then every probe fails with
   `message too long`. Combined with the missing bound on argument length this is a
   confusing failure mode rather than a validation error.
-- Fix: reject payloads above 65 507 bytes at parse time.
+- Fix: reject payloads above 65 507 bytes at parse time. Note that macOS additionally caps
+  UDP sends at 9 216 bytes by default (`net.inet.udp.maxdgram`); larger payloads fail per
+  probe with `message too long` there, which is reported on the probe line.
 
 #### m3. Port strings are accepted verbatim
 - `internal/helpers/helpers.go:10-13`
@@ -381,7 +383,7 @@ DNS lookup.
 | m10 min sentinel, 32-bit counters | fixed | `output: ...` |
 | m11 `-c` help text | fixed | `cli: bound -t/-d, ...` |
 | m12 stderr colour | fixed | `output: ...` |
-| m13 dependencies | updated to the newest versions that build with Go 1.25 (`x/sys` 0.49 and `x/tools` current require Go 1.26); `govulncheck` runs in CI | `ci: ...` |
+| m13 dependencies | updated to the newest versions that build with Go 1.25 (`x/sys` 0.49 and `x/tools` current require Go 1.26); `govulncheck` runs in CI. Its first CI run reported GO-2026-4971 (panic in `net.Dial`/`LookupPort` on NUL bytes, Windows) in the Go 1.25.4 standard library; the toolchain is raised to 1.25.10 where it is fixed | `ci: ...`, `tests,ci: platform-independent assertions, ...` |
 | m14 Jekyll configuration | fixed | `site,docs: pin Jekyll theme, ...` |
 | m15 README install recipe | fixed | same |
 | m16 `make dist` hides failures | fixed | `ci: ...` |
@@ -398,9 +400,9 @@ Not done in this branch:
   read the upstream action repositories to obtain and verify the SHAs, and an unverified
   SHA is worse than a tag. Dependabot now watches the actions; pin them in a follow-up
   with `pin-github-action` or by hand from the upstream release pages.
-- **`govulncheck` result at baseline (m13).** `vuln.go.dev` was unreachable from the audit
-  sandbox. The CI job runs it on every push; the first run on this branch is the
-  authoritative result.
+- **`govulncheck` at baseline (m13).** `vuln.go.dev` was unreachable from the audit
+  sandbox. The first CI run found one reachable standard-library vulnerability
+  (GO-2026-4971, Go 1.25.4 `net`), fixed by moving to Go 1.25.10; the job now passes.
 
 ## 3. Behavioural changes
 
