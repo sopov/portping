@@ -109,14 +109,60 @@ func TestParseStrings(t *testing.T) {
 			expectedPayload: "test-payload",
 		},
 
-		// IPv6 without brackets but with port (edge case)
+		// An unbracketed IPv6 literal is an address, never host:port
 		{
-			name:            "IPv6 without brackets but with port",
+			name:            "Unbracketed IPv6 literal that looks like host:port",
 			args:            []string{"::1:80"},
 			isUDP:           false,
-			expectedHost:    "::1",
-			expectedPort:    "80",
+			expectedHost:    "::1:80",
+			expectedPort:    "",
 			expectedPayload: "",
+		},
+		{
+			name:         "Bare IPv6 loopback with separate port",
+			args:         []string{"::1", "80"},
+			expectedHost: "::1",
+			expectedPort: "80",
+		},
+		{
+			name:         "Bare full IPv6 with separate port",
+			args:         []string{"2001:db8::1", "443"},
+			expectedHost: "2001:db8::1",
+			expectedPort: "443",
+		},
+		{
+			name:         "IPv6 with zone, bracketed with port",
+			args:         []string{"[fe80::1%eth0]:22"},
+			expectedHost: "fe80::1%eth0",
+			expectedPort: "22",
+		},
+		{
+			name:         "IPv6 with zone, bare with separate port",
+			args:         []string{"fe80::1%eth0", "22"},
+			expectedHost: "fe80::1%eth0",
+			expectedPort: "22",
+		},
+		{
+			name:         "IPv4-mapped IPv6 literal",
+			args:         []string{"::ffff:192.0.2.1", "80"},
+			expectedHost: "::ffff:192.0.2.1",
+			expectedPort: "80",
+		},
+		{
+			name:            "UDP: host, port and payload",
+			args:            []string{"-udp", "192.0.2.1", "53", "abcd"},
+			isUDP:           true,
+			expectedHost:    "192.0.2.1",
+			expectedPort:    "53",
+			expectedPayload: "abcd",
+		},
+		{
+			name:            "UDP: bare IPv6, port and payload",
+			args:            []string{"-udp", "2001:db8::1", "53", "abcd"},
+			isUDP:           true,
+			expectedHost:    "2001:db8::1",
+			expectedPort:    "53",
+			expectedPayload: "abcd",
 		},
 
 		// Subdomains and complex names
@@ -165,6 +211,38 @@ func TestParseStrings(t *testing.T) {
 	}
 }
 
+func TestParseArgs_Errors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"unterminated bracket", []string{"[::1"}, "invalid address"},
+		{"bracket without literal", []string{"[example.com]:80"}, "invalid IPv6 literal"},
+		{"bracket with port but garbage", []string{"[zz]:80"}, "invalid IPv6 literal"},
+		{"missing host", []string{":80"}, "invalid address"},
+		{"missing port after colon", []string{"example.com:"}, "invalid address"},
+		{"unbracketed v6 with port hint", []string{"2001:db8::1:zz"}, "[address]:port"},
+		{"extra argument tcp", []string{"example.com", "80", "junk"}, "unexpected argument"},
+		{"extra argument host:port", []string{"example.com:80", "443"}, "unexpected argument"},
+		{"extra argument udp", []string{"-udp", "example.com", "53", "abcd", "junk"}, "unexpected argument"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			cfg := &models.Config{}
+			initFlags(fs, cfg)
+			if err := fs.Parse(tt.args); err != nil {
+				t.Fatalf("flag parse: %v", err)
+			}
+			err := parseArgs(fs, cfg)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("parseArgs(%v) error = %v, want containing %q", tt.args, err, tt.want)
+			}
+		})
+	}
+}
+
 func TestParse(t *testing.T) {
 	// Save original flag.CommandLine
 	originalFlagSet := flag.CommandLine
@@ -172,7 +250,7 @@ func TestParse(t *testing.T) {
 		flag.CommandLine = originalFlagSet
 	}()
 
-	os.Args = []string{"portping", "-t", "2000", "-d", "500", "example.com", "80"}
+	os.Args = []string{"portping", "-t", "2000", "-d", "500", "127.0.0.1", "80"}
 	// Reset flag.CommandLine so Parse() can create flags from scratch
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	// Don't parse here, Parse() will call flag.Parse() itself
@@ -196,8 +274,8 @@ func TestParse(t *testing.T) {
 	if cfg.DelayDur != 500*time.Millisecond {
 		t.Errorf("Expected DelayDur = 500ms, got %v", cfg.DelayDur)
 	}
-	if cfg.Host != "example.com" {
-		t.Errorf("Expected Host = 'example.com', got '%s'", cfg.Host)
+	if cfg.Host != "127.0.0.1" {
+		t.Errorf("Expected Host = '127.0.0.1', got '%s'", cfg.Host)
 	}
 	if cfg.Port != "80" {
 		t.Errorf("Expected Port = '80', got '%s'", cfg.Port)
@@ -216,7 +294,7 @@ func TestParse_UDP(t *testing.T) {
 		flag.CommandLine = originalFlagSet
 	}()
 
-	os.Args = []string{"portping", "-udp", "example.com:53", "payload"}
+	os.Args = []string{"portping", "-udp", "127.0.0.1:53", "payload"}
 	// Reset flag.CommandLine so Parse() can create flags from scratch
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	// Don't parse here, Parse() will call flag.Parse() itself
@@ -246,7 +324,7 @@ func TestParse_WithCount(t *testing.T) {
 		flag.CommandLine = originalFlagSet
 	}()
 
-	os.Args = []string{"portping", "-c", "10", "example.com", "80"}
+	os.Args = []string{"portping", "-c", "10", "127.0.0.1", "80"}
 	// Reset flag.CommandLine so Parse() can create flags from scratch
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	// Don't parse here, Parse() will call flag.Parse() itself
@@ -268,7 +346,7 @@ func TestParse_PresetBoolShortcut(t *testing.T) {
 	original := flag.CommandLine
 	defer func() { flag.CommandLine = original }()
 
-	os.Args = []string{"portping", "-dns", "example.com:53"}
+	os.Args = []string{"portping", "-dns", "127.0.0.1:53"}
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 
 	cfg, err := Parse()
@@ -303,7 +381,7 @@ func TestParse_PresetOverriddenByArgPayload(t *testing.T) {
 	original := flag.CommandLine
 	defer func() { flag.CommandLine = original }()
 
-	os.Args = []string{"portping", "-preset", "dns", "example.com:53", "abcd"}
+	os.Args = []string{"portping", "-preset", "dns", "127.0.0.1:53", "abcd"}
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 
 	cfg, err := Parse()
@@ -325,7 +403,7 @@ func TestParse_IPv4Flag(t *testing.T) {
 	original := flag.CommandLine
 	defer func() { flag.CommandLine = original }()
 
-	os.Args = []string{"portping", "-4", "example.com", "80"}
+	os.Args = []string{"portping", "-4", "127.0.0.1", "80"}
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 
 	cfg, err := Parse()
@@ -345,7 +423,7 @@ func TestParse_IPv6Flag(t *testing.T) {
 	original := flag.CommandLine
 	defer func() { flag.CommandLine = original }()
 
-	os.Args = []string{"portping", "-6", "example.com", "80"}
+	os.Args = []string{"portping", "-6", "::1", "80"}
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 
 	cfg, err := Parse()
@@ -365,7 +443,7 @@ func TestParse_IPv4AndIPv6Flags(t *testing.T) {
 	original := flag.CommandLine
 	defer func() { flag.CommandLine = original }()
 
-	os.Args = []string{"portping", "-4", "-6", "example.com", "80"}
+	os.Args = []string{"portping", "-4", "-6", "127.0.0.1", "80"}
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 
 	cfg, err := Parse()
@@ -385,7 +463,7 @@ func TestParse_DefaultIPv4(t *testing.T) {
 	original := flag.CommandLine
 	defer func() { flag.CommandLine = original }()
 
-	os.Args = []string{"portping", "example.com", "80"}
+	os.Args = []string{"portping", "127.0.0.1", "80"}
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 
 	cfg, err := Parse()
@@ -582,8 +660,8 @@ func TestSortIPs_IPv4BeforeIPv6(t *testing.T) {
 	expected := []models.IP{
 		{IP: "10.0.0.1", IsIPv4: true},
 		{IP: "192.168.1.1", IsIPv4: true},
-		{IP: "2001:db8::1", IsIPv4: false},
 		{IP: "::1", IsIPv4: false},
+		{IP: "2001:db8::1", IsIPv4: false},
 	}
 
 	if len(cfg.IPs) != len(expected) {
@@ -636,11 +714,26 @@ func TestSortIPs_IPv6Only(t *testing.T) {
 
 	SortIPs(cfg)
 
-	expected := []string{"2001:db8::1", "2001:db8::2", "::1"}
+	expected := []string{"::1", "2001:db8::1", "2001:db8::2"}
 
 	for i, exp := range expected {
 		if cfg.IPs[i].IP != exp {
 			t.Errorf("Position %d: expected IP '%s', got '%s'", i, exp, cfg.IPs[i].IP)
+		}
+	}
+}
+
+func TestSortIPs_Numeric(t *testing.T) {
+	cfg := &models.Config{IPs: []models.IP{
+		{IP: "10.0.0.2", IsIPv4: true},
+		{IP: "9.0.0.1", IsIPv4: true},
+		{IP: "100.0.0.1", IsIPv4: true},
+	}}
+	SortIPs(cfg)
+	want := []string{"9.0.0.1", "10.0.0.2", "100.0.0.1"}
+	for i, w := range want {
+		if cfg.IPs[i].IP != w {
+			t.Errorf("position %d: got %s, want %s", i, cfg.IPs[i].IP, w)
 		}
 	}
 }

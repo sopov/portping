@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -28,72 +29,109 @@ var udpBufPool = sync.Pool{New: func() any {
 	return &b
 }}
 
-func getIPv4(cfg *models.Config, addr net.IP) (string, bool) {
-	if !cfg.AllowIPv4 {
-		return "", false
-	}
-	if ipv4 := addr.To4(); ipv4 != nil {
-		return ipv4.String(), true
-	}
-	return "", false
+// Resolver is the part of net.Resolver used by Resolve. Tests supply a fake.
+type Resolver interface {
+	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
 }
 
-func getIPv6(cfg *models.Config, addr net.IP) (string, bool) {
-	if !cfg.AllowIPv6 {
-		return "", false
+// minResolveTimeout is the floor for the DNS lookup budget. The per-probe
+// timeout is often set far below what an uncached recursive lookup needs.
+const minResolveTimeout = 5 * time.Second
+
+// ParseLiteral reports whether host is an IP literal and returns it in
+// canonical form: zone identifiers are kept, IPv4-mapped IPv6 addresses are
+// unmapped to IPv4.
+func ParseLiteral(host string) (netip.Addr, bool) {
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, false
 	}
-	if addr.To4() != nil {
-		return "", false
-	}
-	if ipv6 := addr.To16(); ipv6 != nil {
-		return ipv6.String(), true
-	}
-	return "", false
+	return addr.Unmap(), true
 }
 
-func getIP(cfg *models.Config, addr net.IP) (models.IP, bool) {
-	if ip, found := getIPv4(cfg, addr); found {
-		return models.IP{
-			IP:     ip,
-			IsIPv4: true,
-		}, true
-	}
-	if ip, found := getIPv6(cfg, addr); found {
-		return models.IP{
-			IP:     ip,
-			IsIPv4: false,
-		}, true
-	}
-	return models.IP{}, false
+func toIP(addr netip.Addr) models.IP {
+	addr = addr.Unmap()
+	return models.IP{IP: addr.String(), IsIPv4: addr.Is4()}
 }
 
+func allowed(cfg *models.Config, addr netip.Addr) bool {
+	if addr.Unmap().Is4() {
+		return cfg.AllowIPv4
+	}
+	return cfg.AllowIPv6
+}
+
+// GetAddrs resolves cfg.Host into the addresses to probe, filtered by the
+// address-family flags and sorted IPv4 first.
 func GetAddrs(cfg *models.Config) ([]models.IP, error) {
-	if ip := net.ParseIP(cfg.Host); ip != nil {
-		if got, ok := getIP(cfg, ip); ok {
-			return []models.IP{got}, nil
+	return Resolve(context.Background(), net.DefaultResolver, cfg)
+}
+
+// Resolve is GetAddrs with an explicit context and resolver.
+func Resolve(ctx context.Context, r Resolver, cfg *models.Config) ([]models.IP, error) {
+	if addr, ok := ParseLiteral(cfg.Host); ok {
+		if !allowed(cfg, addr) {
+			return nil, familyError(cfg, addr)
 		}
-		return nil, errors.New("no addresses found")
+		return []models.IP{toIP(addr)}, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.TimeoutDur)
+	timeout := cfg.TimeoutDur
+	if timeout < minResolveTimeout {
+		timeout = minResolveTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	addrs, err := net.DefaultResolver.LookupIP(ctx, "ip", cfg.Host)
+	addrs, err := r.LookupNetIP(ctx, "ip", cfg.Host)
 	if err != nil {
 		return nil, fmt.Errorf("resolve host `%s`: %w", cfg.Host, err)
 	}
 
+	seen := make(map[netip.Addr]struct{}, len(addrs))
 	ips := make([]models.IP, 0, len(addrs))
+	var skipped4, skipped6 int
 	for _, addr := range addrs {
-		if ip, found := getIP(cfg, addr); found {
-			ips = append(ips, ip)
+		addr = addr.Unmap()
+		if _, dup := seen[addr]; dup {
+			continue
 		}
+		seen[addr] = struct{}{}
+		if !allowed(cfg, addr) {
+			if addr.Is4() {
+				skipped4++
+			} else {
+				skipped6++
+			}
+			continue
+		}
+		ips = append(ips, toIP(addr))
 	}
 	if len(ips) == 0 {
-		return ips, errors.New("no addresses found")
+		switch {
+		case skipped6 > 0 && !cfg.AllowIPv6:
+			return nil, fmt.Errorf("host `%s` has only IPv6 addresses; add -6 to probe them", cfg.Host)
+		case skipped4 > 0 && !cfg.AllowIPv4:
+			return nil, fmt.Errorf("host `%s` has only IPv4 addresses; add -4 to probe them", cfg.Host)
+		default:
+			return nil, fmt.Errorf("resolve host `%s`: no addresses found", cfg.Host)
+		}
 	}
-
+	models.SortIPs(ips)
 	return ips, nil
+}
+
+func familyError(cfg *models.Config, addr netip.Addr) error {
+	if addr.Is4() {
+		if cfg.AllowIPv6 {
+			return fmt.Errorf("%s is an IPv4 address but only IPv6 is allowed (-6); add -4", addr)
+		}
+		return fmt.Errorf("%s is an IPv4 address but IPv4 is not allowed", addr)
+	}
+	if cfg.AllowIPv4 {
+		return fmt.Errorf("%s is an IPv6 address but only IPv4 is allowed; add -6", addr)
+	}
+	return fmt.Errorf("%s is an IPv6 address but IPv6 is not allowed", addr)
 }
 
 // PingTCP opens a TCP connection to opts.Address and closes it again. The

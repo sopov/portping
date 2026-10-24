@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"os"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,156 +15,171 @@ import (
 	"github.com/sopov/portping/internal/models"
 )
 
-func TestGetIPv4(t *testing.T) {
-	tests := []struct {
-		name     string
-		cfg      *models.Config
-		ip       net.IP
-		expected string
-		found    bool
-	}{
-		{
-			name:     "IPv4 address allowed",
-			cfg:      &models.Config{AllowIPv4: true},
-			ip:       net.ParseIP("192.168.1.1"),
-			expected: "192.168.1.1",
-			found:    true,
-		},
-		{
-			name:     "IPv4 address not allowed",
-			cfg:      &models.Config{AllowIPv4: false},
-			ip:       net.ParseIP("192.168.1.1"),
-			expected: "",
-			found:    false,
-		},
-		{
-			name:     "IPv6 address",
-			cfg:      &models.Config{AllowIPv4: true},
-			ip:       net.ParseIP("::1"),
-			expected: "",
-			found:    false,
-		},
-	}
+type fakeResolver struct {
+	addrs []string
+	err   error
+	calls int
+	host  string
+	ctx   context.Context
+}
 
+func (f *fakeResolver) LookupNetIP(ctx context.Context, _ string, host string) ([]netip.Addr, error) {
+	f.calls++
+	f.host = host
+	f.ctx = ctx
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := make([]netip.Addr, 0, len(f.addrs))
+	for _, a := range f.addrs {
+		out = append(out, netip.MustParseAddr(a))
+	}
+	return out, nil
+}
+
+func ipStrings(ips []models.IP) []string {
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		out = append(out, ip.IP)
+	}
+	return out
+}
+
+func TestParseLiteral(t *testing.T) {
+	tests := []struct {
+		in   string
+		ok   bool
+		want string
+		is4  bool
+	}{
+		{"127.0.0.1", true, "127.0.0.1", true},
+		{"::1", true, "::1", false},
+		{"2001:db8::1", true, "2001:db8::1", false},
+		{"::1:80", true, "::1:80", false},
+		{"fe80::1%eth0", true, "fe80::1%eth0", false},
+		{"::ffff:192.0.2.1", true, "192.0.2.1", true},
+		{"example.com", false, "", false},
+		{"[::1]", false, "", false},
+		{"1.2.3", false, "", false},
+		{"", false, "", false},
+	}
+	for _, tt := range tests {
+		got, ok := ParseLiteral(tt.in)
+		if ok != tt.ok {
+			t.Errorf("ParseLiteral(%q) ok = %v, want %v", tt.in, ok, tt.ok)
+			continue
+		}
+		if ok && (got.String() != tt.want || got.Is4() != tt.is4) {
+			t.Errorf("ParseLiteral(%q) = %s (v4=%v), want %s (v4=%v)", tt.in, got, got.Is4(), tt.want, tt.is4)
+		}
+	}
+}
+
+func TestResolve_Literals(t *testing.T) {
+	tests := []struct {
+		name    string
+		host    string
+		v4, v6  bool
+		want    string
+		wantV4  bool
+		wantErr string
+	}{
+		{name: "v4 default", host: "192.0.2.1", v4: true, want: "192.0.2.1", wantV4: true},
+		{name: "v6 allowed", host: "2001:db8::1", v6: true, want: "2001:db8::1"},
+		{name: "v6 with zone keeps zone", host: "fe80::1%eth0", v6: true, want: "fe80::1%eth0"},
+		{name: "mapped v4 is v4", host: "::ffff:192.0.2.1", v4: true, want: "192.0.2.1", wantV4: true},
+		{name: "v6 literal with only v4 allowed", host: "::1", v4: true, wantErr: "IPv6 address but only IPv4"},
+		{name: "v4 literal with only v6 allowed", host: "127.0.0.1", v6: true, wantErr: "IPv4 address but only IPv6"},
+		{name: "both allowed v4 literal", host: "127.0.0.1", v4: true, v6: true, want: "127.0.0.1", wantV4: true},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, found := getIPv4(tt.cfg, tt.ip)
-			if found != tt.found {
-				t.Errorf("getIPv4() found = %v, expected %v", found, tt.found)
+			r := &fakeResolver{}
+			cfg := &models.Config{Host: tt.host, AllowIPv4: tt.v4, AllowIPv6: tt.v6, TimeoutDur: time.Second}
+			ips, err := Resolve(context.Background(), r, cfg)
+			if r.calls != 0 {
+				t.Errorf("literal must not hit the resolver, got %d calls", r.calls)
 			}
-			if result != tt.expected {
-				t.Errorf("getIPv4() = %q, expected %q", result, tt.expected)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(ips) != 1 || ips[0].IP != tt.want || ips[0].IsIPv4 != tt.wantV4 {
+				t.Errorf("got %+v, want %s (v4=%v)", ips, tt.want, tt.wantV4)
 			}
 		})
 	}
 }
 
-func TestGetIPv6(t *testing.T) {
+func TestResolve_Names(t *testing.T) {
+	both := []string{"2001:db8::2", "192.0.2.10", "2001:db8::1", "192.0.2.9", "::ffff:192.0.2.10"}
 	tests := []struct {
-		name     string
-		cfg      *models.Config
-		ip       net.IP
-		expected string
-		found    bool
+		name    string
+		addrs   []string
+		err     error
+		v4, v6  bool
+		want    []string
+		wantErr string
 	}{
-		{
-			name:     "IPv6 address allowed",
-			cfg:      &models.Config{AllowIPv6: true},
-			ip:       net.ParseIP("::1"),
-			expected: "::1",
-			found:    true,
-		},
-		{
-			name:     "IPv6 address not allowed",
-			cfg:      &models.Config{AllowIPv6: false},
-			ip:       net.ParseIP("::1"),
-			expected: "",
-			found:    false,
-		},
-		{
-			name:     "IPv4 address (should not be IPv6)",
-			cfg:      &models.Config{AllowIPv6: true},
-			ip:       net.ParseIP("192.168.1.1"),
-			expected: "",
-			found:    false,
-		},
-		{
-			name:     "Full IPv6 address",
-			cfg:      &models.Config{AllowIPv6: true},
-			ip:       net.ParseIP("2001:db8::1"),
-			expected: "2001:db8::1",
-			found:    true,
-		},
+		{name: "default v4 only, sorted numerically, deduplicated", addrs: both, v4: true, want: []string{"192.0.2.9", "192.0.2.10"}},
+		{name: "v6 only", addrs: both, v6: true, want: []string{"2001:db8::1", "2001:db8::2"}},
+		{name: "both families, v4 first", addrs: both, v4: true, v6: true, want: []string{"192.0.2.9", "192.0.2.10", "2001:db8::1", "2001:db8::2"}},
+		{name: "only v6 answers with v4 flag", addrs: []string{"2001:db8::1"}, v4: true, wantErr: "only IPv6 addresses; add -6"},
+		{name: "only v4 answers with v6 flag", addrs: []string{"192.0.2.1"}, v6: true, wantErr: "only IPv4 addresses; add -4"},
+		{name: "empty answer", addrs: nil, v4: true, wantErr: "no addresses found"},
+		{name: "lookup error is wrapped", err: &net.DNSError{Err: "no such host", Name: "x", IsNotFound: true}, v4: true, wantErr: "resolve host `nonexistent.invalid`"},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, found := getIPv6(tt.cfg, tt.ip)
-			if found != tt.found {
-				t.Errorf("getIPv6() found = %v, expected %v", found, tt.found)
+			r := &fakeResolver{addrs: tt.addrs, err: tt.err}
+			cfg := &models.Config{Host: "nonexistent.invalid", AllowIPv4: tt.v4, AllowIPv6: tt.v6, TimeoutDur: 100 * time.Millisecond}
+			ips, err := Resolve(context.Background(), r, cfg)
+			if r.calls != 1 || r.host != cfg.Host {
+				t.Errorf("resolver calls = %d host = %q", r.calls, r.host)
 			}
-			if result != tt.expected {
-				t.Errorf("getIPv6() = %q, expected %q", result, tt.expected)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+				}
+				if tt.err != nil && !errors.Is(err, tt.err) {
+					t.Errorf("wrapped error lost: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := ipStrings(ips); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+			for _, ip := range ips {
+				a := netip.MustParseAddr(ip.IP)
+				if a.Is4() != ip.IsIPv4 {
+					t.Errorf("%s: IsIPv4 = %v", ip.IP, ip.IsIPv4)
+				}
 			}
 		})
 	}
 }
 
-func TestGetIP(t *testing.T) {
-	tests := []struct {
-		name     string
-		cfg      *models.Config
-		ip       net.IP
-		expected models.IP
-		found    bool
-	}{
-		{
-			name: "IPv4 preferred",
-			cfg:  &models.Config{AllowIPv4: true, AllowIPv6: true},
-			ip:   net.ParseIP("192.168.1.1"),
-			expected: models.IP{
-				IP:     "192.168.1.1",
-				IsIPv4: true,
-			},
-			found: true,
-		},
-		{
-			name: "IPv6 when IPv4 not allowed",
-			cfg:  &models.Config{AllowIPv4: false, AllowIPv6: true},
-			ip:   net.ParseIP("::1"),
-			expected: models.IP{
-				IP:     "::1",
-				IsIPv4: false,
-			},
-			found: true,
-		},
-		{
-			name:     "No match when both disabled",
-			cfg:      &models.Config{AllowIPv4: false, AllowIPv6: false},
-			ip:       net.ParseIP("192.168.1.1"),
-			expected: models.IP{},
-			found:    false,
-		},
+func TestResolve_TimeoutFloor(t *testing.T) {
+	r := &fakeResolver{addrs: []string{"192.0.2.1"}}
+	cfg := &models.Config{Host: "nonexistent.invalid", AllowIPv4: true, TimeoutDur: 100 * time.Millisecond}
+	before := time.Now()
+	if _, err := Resolve(context.Background(), r, cfg); err != nil {
+		t.Fatal(err)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, found := getIP(tt.cfg, tt.ip)
-			if found != tt.found {
-				t.Errorf("getIP() found = %v, expected %v", found, tt.found)
-			}
-			if found {
-				if result.IP != tt.expected.IP {
-					t.Errorf("getIP() IP = %q, expected %q", result.IP, tt.expected.IP)
-				}
-				if result.IsIPv4 != tt.expected.IsIPv4 {
-					t.Errorf("getIP() IsIPv4 = %v, expected %v", result.IsIPv4, tt.expected.IsIPv4)
-				}
-				if result.IsIPv6() != tt.expected.IsIPv6() {
-					t.Errorf("getIP() IsIPv6() = %v, expected %v", result.IsIPv6(), tt.expected.IsIPv6())
-				}
-			}
-		})
+	dl, ok := r.ctx.Deadline()
+	if !ok {
+		t.Fatal("resolver context has no deadline")
+	}
+	if dl.Sub(before) < minResolveTimeout-time.Second {
+		t.Errorf("resolver deadline %v after start, want at least %v", dl.Sub(before), minResolveTimeout)
 	}
 }
 
@@ -394,125 +412,4 @@ func TestProbes_ConcurrentUseIsRaceFree(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-}
-
-func TestGetAddrs_Success(t *testing.T) {
-	cfg := &models.Config{
-		Host:       "localhost",
-		AllowIPv4:  true,
-		AllowIPv6:  true,
-		TimeoutDur: 5 * time.Second,
-	}
-
-	ips, err := GetAddrs(cfg)
-
-	if err != nil {
-		t.Fatalf("GetAddrs() error = %v, expected nil", err)
-	}
-	if len(ips) == 0 {
-		t.Error("GetAddrs() returned empty slice, expected at least one IP")
-	}
-	// Verify that all IPs are valid
-	for _, ip := range ips {
-		if ip.IP == "" {
-			t.Error("GetAddrs() returned IP with empty IP field")
-		}
-		if !ip.IsIPv4 && !ip.IsIPv6() {
-			t.Error("GetAddrs() returned IP with neither IsIPv4 nor IsIPv6 set")
-		}
-		if ip.IsIPv4 && ip.IsIPv6() {
-			t.Error("GetAddrs() returned IP with both IsIPv4 and IsIPv6 set")
-		}
-	}
-}
-
-func TestGetAddrs_IPv4Only(t *testing.T) {
-	cfg := &models.Config{
-		Host:       "localhost",
-		AllowIPv4:  true,
-		AllowIPv6:  false,
-		TimeoutDur: 5 * time.Second,
-	}
-
-	ips, err := GetAddrs(cfg)
-
-	if err != nil {
-		t.Fatalf("GetAddrs() error = %v, expected nil", err)
-	}
-	// Verify that all IPs are IPv4
-	for _, ip := range ips {
-		if !ip.IsIPv4 {
-			t.Errorf("GetAddrs() returned non-IPv4 IP %s when AllowIPv6=false", ip.IP)
-		}
-		if ip.IsIPv6() {
-			t.Errorf("GetAddrs() returned IPv6 IP %s when AllowIPv6=false", ip.IP)
-		}
-	}
-}
-
-func TestGetAddrs_IPv6Only(t *testing.T) {
-	cfg := &models.Config{
-		Host:       "localhost",
-		AllowIPv4:  false,
-		AllowIPv6:  true,
-		TimeoutDur: 5 * time.Second,
-	}
-
-	ips, err := GetAddrs(cfg)
-
-	// May get "no addresses found" error if no IPv6, or success if IPv6 exists
-	if err != nil {
-		if err.Error() != "no addresses found" {
-			t.Errorf("GetAddrs() error = %v, expected 'no addresses found' or nil", err)
-		}
-		return
-	}
-	// If success, verify that all IPs are IPv6
-	for _, ip := range ips {
-		if !ip.IsIPv6() {
-			t.Errorf("GetAddrs() returned non-IPv6 IP %s when AllowIPv4=false", ip.IP)
-		}
-		if ip.IsIPv4 {
-			t.Errorf("GetAddrs() returned IPv4 IP %s when AllowIPv4=false", ip.IP)
-		}
-	}
-}
-
-func TestGetAddrs_InvalidHost(t *testing.T) {
-	cfg := &models.Config{
-		Host:      "invalid-host-that-does-not-exist-12345.example",
-		AllowIPv4: true,
-		AllowIPv6: true,
-	}
-
-	ips, err := GetAddrs(cfg)
-
-	if err == nil {
-		t.Error("GetAddrs() expected error for invalid host, got nil")
-	}
-	if len(ips) != 0 {
-		t.Errorf("GetAddrs() expected empty slice on error, got %d IPs", len(ips))
-	}
-}
-
-func TestGetAddrs_NoAddressesAfterFilter(t *testing.T) {
-	cfg := &models.Config{
-		Host:       "localhost",
-		AllowIPv4:  false,
-		AllowIPv6:  false, // Disable both types
-		TimeoutDur: 5 * time.Second,
-	}
-
-	ips, err := GetAddrs(cfg)
-
-	// Should get "no addresses found" error
-	if err == nil {
-		t.Error("GetAddrs() expected error when both IPv4 and IPv6 disabled, got nil")
-	}
-	if err != nil && err.Error() != "no addresses found" {
-		t.Errorf("GetAddrs() error = %v, expected 'no addresses found'", err)
-	}
-	if len(ips) != 0 {
-		t.Errorf("GetAddrs() expected empty slice, got %d IPs", len(ips))
-	}
 }

@@ -2,6 +2,8 @@ package models
 
 import (
 	"context"
+	"net/netip"
+	"sort"
 	"time"
 )
 
@@ -21,6 +23,26 @@ type IP struct {
 
 func (ip IP) IsIPv6() bool {
 	return !ip.IsIPv4
+}
+
+// Less orders IPv4 before IPv6 and numerically within a family, so that
+// 9.0.0.1 sorts before 10.0.0.2 and ::1 before 2001:db8::1. Addresses that
+// do not parse fall back to string order.
+func (ip IP) Less(other IP) bool {
+	if ip.IsIPv4 != other.IsIPv4 {
+		return ip.IsIPv4
+	}
+	a, errA := netip.ParseAddr(ip.IP)
+	b, errB := netip.ParseAddr(other.IP)
+	if errA == nil && errB == nil {
+		return a.Compare(b) < 0
+	}
+	return ip.IP < other.IP
+}
+
+// SortIPs sorts addresses in place using IP.Less.
+func SortIPs(ips []IP) {
+	sort.Slice(ips, func(i, j int) bool { return ips[i].Less(ips[j]) })
 }
 
 type Config struct {

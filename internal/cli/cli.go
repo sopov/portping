@@ -120,7 +120,7 @@ func parseArgs(fs *flag.FlagSet, cfg *models.Config) error {
 	if len(args) == 0 {
 		return nil
 	}
-	host, port, payloadFromArg, portInHost := "", "", "", false
+	var payloadFromArg string
 
 	var chosen string
 	var count int
@@ -145,20 +145,14 @@ func parseArgs(fs *flag.FlagSet, cfg *models.Config) error {
 		return fmt.Errorf("conflicting presets: %q and %q", cfg.Preset, chosen)
 	}
 
-	raw0 := args[0]
-	// IPv6 with brackets or host:port
-	if strings.HasPrefix(raw0, "[") || strings.Contains(raw0, ":") {
-		h, p, err := trySplitHostPort(raw0)
-		if err == nil {
-			host, port, portInHost = h, p, true
-		}
+	host, port, err := splitDestination(args[0])
+	if err != nil {
+		return err
 	}
-
-	if host == "" {
-		host = strings.Trim(raw0, "[]")
-		if len(args) > 1 {
-			port = args[1]
-		}
+	rest := args[1:]
+	portInHost := port != ""
+	if !portInHost && len(rest) > 0 {
+		port, rest = rest[0], rest[1:]
 	}
 
 	// resolve boolean shortcuts preset
@@ -181,22 +175,16 @@ func parseArgs(fs *flag.FlagSet, cfg *models.Config) error {
 		}
 	}
 
-	// UDP payload from args (check after preset resolution so cfg.UDP is set)
-	// Check for positional payload even if preset is set (it will override)
-	if cfg.IsUDP() {
-		idx := 2
-		if portInHost {
-			idx = 1
-		}
-		if len(args) > idx {
-			payloadFromArg = args[idx]
-		}
+	// A positional UDP payload follows host and port (or host:port) and
+	// overrides a preset payload.
+	if cfg.IsUDP() && len(rest) > 0 {
+		payloadFromArg, rest = rest[0], rest[1:]
 	}
-
-	// if found positional UDP payload, override preset payload
-	// Positional payload overrides preset payload
 	if payloadFromArg != "" {
 		cfg.UDPPayloadHex = payloadFromArg
+	}
+	if len(rest) > 0 {
+		return fmt.Errorf("unexpected argument(s): %s", strings.Join(rest, " "))
 	}
 
 	cfg.Host = host
@@ -205,25 +193,50 @@ func parseArgs(fs *flag.FlagSet, cfg *models.Config) error {
 	return nil
 }
 
-// trySplitHostPort handles cases like "::1:80" -> "[::1]:80"
-func trySplitHostPort(s string) (host, port string, err error) {
-	// Normal forms: "host:port", "[v6]:port"
-	if h, p, e := net.SplitHostPort(s); e == nil {
+// splitDestination interprets the destination argument. Accepted forms:
+//
+//	host            hostname or IP literal (IPv6 with or without a zone)
+//	[v6]            bracketed IPv6 literal
+//	host:port       hostname or IPv4 literal with port
+//	[v6]:port       bracketed IPv6 literal with port
+//
+// An IP literal is never split: "::1:80" is the address ::1:80, not ::1 on
+// port 80. IPv6 with a port therefore needs the bracket form.
+func splitDestination(raw string) (host, port string, err error) {
+	if raw == "" {
+		return "", "", errors.New("destination is required")
+	}
+	if strings.HasPrefix(raw, "[") {
+		if strings.HasSuffix(raw, "]") {
+			host = raw[1 : len(raw)-1]
+			if _, ok := probe.ParseLiteral(host); !ok {
+				return "", "", fmt.Errorf("invalid IPv6 literal `%s`", raw)
+			}
+			return host, "", nil
+		}
+		h, p, e := net.SplitHostPort(raw)
+		if e != nil || p == "" {
+			return "", "", fmt.Errorf("invalid address `%s`", raw)
+		}
+		if _, ok := probe.ParseLiteral(h); !ok {
+			return "", "", fmt.Errorf("invalid IPv6 literal `%s`", raw)
+		}
 		return h, p, nil
 	}
-
-	// IPv6 without brackets: "::1:80"
-	if strings.Count(s, ":") >= 2 && !strings.HasPrefix(s, "[") {
-		i := strings.LastIndex(s, ":")
-		if i > 0 && i < len(s)-1 {
-			h := s[:i]
-			p := s[i+1:]
-			// Let net.SplitHostPort validate port strictly
-			return net.SplitHostPort("[" + h + "]:" + p)
-		}
+	if _, ok := probe.ParseLiteral(raw); ok {
+		return raw, "", nil
 	}
-
-	return "", "", fmt.Errorf("invalid address `%s`", s)
+	if strings.Contains(raw, ":") {
+		h, p, e := net.SplitHostPort(raw)
+		if e != nil || h == "" || p == "" {
+			if strings.Count(raw, ":") > 1 {
+				return "", "", fmt.Errorf("invalid address `%s`: write IPv6 with a port as [address]:port", raw)
+			}
+			return "", "", fmt.Errorf("invalid address `%s`", raw)
+		}
+		return h, p, nil
+	}
+	return raw, "", nil
 }
 
 func Validate(cfg *models.Config) error {
@@ -255,17 +268,7 @@ func Validate(cfg *models.Config) error {
 }
 
 func SortIPs(cfg *models.Config) {
-	sort.Slice(cfg.IPs, func(i, j int) bool {
-		ipA, ipB := cfg.IPs[i], cfg.IPs[j]
-
-		// IPv4 always comes before IPv6
-		if ipA.IsIPv4 != ipB.IsIPv4 {
-			return ipA.IsIPv4
-		}
-
-		// Within group, sort by string value
-		return ipA.IP < ipB.IP
-	})
+	models.SortIPs(cfg.IPs)
 }
 
 func Usage() string {
