@@ -2,6 +2,7 @@ package cli
 
 import (
 	"flag"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -304,7 +305,7 @@ func TestParse_UDP(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for invalid hex string 'payload', got nil")
 	}
-	if err != nil && err.Error() != "invalid UDP payload, should be hex string" {
+	if err != nil && !strings.HasPrefix(err.Error(), "invalid UDP payload, should be hex string") {
 		t.Errorf("Expected error 'invalid UDP payload, should be hex string', got: %v", err)
 	}
 	// If error occurred, cfg might be nil or partially filled
@@ -476,6 +477,95 @@ func TestParse_DefaultIPv4(t *testing.T) {
 	}
 	if cfg.AllowIPv6 {
 		t.Error("expected AllowIPv6=false by default")
+	}
+}
+
+// parseArgsWith runs the full parse pipeline on args with a private FlagSet.
+func parseArgsWith(t *testing.T, args ...string) (*models.Config, error) {
+	t.Helper()
+	fs := flag.NewFlagSet("portping", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	return parseWith(fs, args)
+}
+
+func TestParse_Validation(t *testing.T) {
+	big := strings.Repeat("00", probe.MaxUDPPayload+1)
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+		check   func(t *testing.T, cfg *models.Config)
+	}{
+		{name: "timeout zero", args: []string{"-t", "0", "127.0.0.1", "80"}, wantErr: "timeout must be between"},
+		{name: "timeout overflow", args: []string{"-t", "99999999999999999", "127.0.0.1", "80"}, wantErr: "timeout must be between"},
+		{name: "timeout above 24h", args: []string{"-t", "86400001", "127.0.0.1", "80"}, wantErr: "timeout must be between"},
+		{name: "delay zero", args: []string{"-d", "0", "127.0.0.1", "80"}, wantErr: "delay must be between"},
+		{name: "delay overflow", args: []string{"-d", "99999999999999999", "127.0.0.1", "80"}, wantErr: "delay must be between"},
+		{name: "count negative", args: []string{"-c", "-1", "127.0.0.1", "80"}, wantErr: "count must be"},
+		{name: "port missing", args: []string{"127.0.0.1"}, wantErr: "port is required"},
+		{name: "port zero", args: []string{"127.0.0.1", "0"}, wantErr: "invalid port"},
+		{name: "port signed", args: []string{"127.0.0.1", "+80"}, wantErr: "invalid port"},
+		{name: "port too large", args: []string{"127.0.0.1:65536"}, wantErr: "invalid port"},
+		{name: "port canonicalised", args: []string{"127.0.0.1", "0080"}, check: func(t *testing.T, cfg *models.Config) {
+			if cfg.Port != "80" {
+				t.Errorf("Port = %q, want 80", cfg.Port)
+			}
+		}},
+		{name: "udp without payload", args: []string{"-udp", "127.0.0.1", "53"}, wantErr: "UDP payload is required"},
+		{name: "udp odd-length payload", args: []string{"-udp", "127.0.0.1", "53", "abc"}, wantErr: "invalid UDP payload"},
+		{name: "udp 0x prefix rejected", args: []string{"-udp", "127.0.0.1", "53", "0xabcd"}, wantErr: "invalid UDP payload"},
+		{name: "udp payload too large", args: []string{"-udp", "127.0.0.1", "53", big}, wantErr: "maximum is 65507"},
+		{name: "udp payload at limit", args: []string{"-udp", "127.0.0.1", "53", strings.Repeat("00", probe.MaxUDPPayload)}, check: func(t *testing.T, cfg *models.Config) {
+			if len(cfg.UDPPayload) != probe.MaxUDPPayload {
+				t.Errorf("payload length = %d", len(cfg.UDPPayload))
+			}
+		}},
+		{name: "payload flag with tcp", args: []string{"-payload", "abcd", "127.0.0.1", "80"}, wantErr: "-payload requires UDP"},
+		{name: "payload flag with tcp preset", args: []string{"-http", "-payload", "abcd", "127.0.0.1"}, wantErr: "-payload requires UDP"},
+		{name: "payload flag with udp preset", args: []string{"-dns", "-payload", "abcd", "127.0.0.1"}, check: func(t *testing.T, cfg *models.Config) {
+			if cfg.UDPPayloadHex != "abcd" || cfg.Port != "53" {
+				t.Errorf("payload %q port %q", cfg.UDPPayloadHex, cfg.Port)
+			}
+		}},
+		{name: "positional payload with tcp is unexpected", args: []string{"127.0.0.1", "80", "abcd"}, wantErr: "unexpected argument"},
+		{name: "preset case-insensitive", args: []string{"-preset", "DNS", "127.0.0.1"}, check: func(t *testing.T, cfg *models.Config) {
+			if cfg.Preset != "dns" || cfg.Port != "53" || !cfg.IsUDP() {
+				t.Errorf("preset %q port %q proto %q", cfg.Preset, cfg.Port, cfg.Proto)
+			}
+		}},
+		{name: "unknown preset", args: []string{"-preset", "gopher", "127.0.0.1"}, wantErr: "invalid preset"},
+		{name: "two preset flags", args: []string{"-dns", "-ntp", "127.0.0.1"}, wantErr: "multiple presets"},
+		{name: "preset flag and -preset conflict", args: []string{"-dns", "-preset", "ntp", "127.0.0.1"}, wantErr: "conflicting presets"},
+		{name: "tcp and udp", args: []string{"-tcp", "-udp", "127.0.0.1", "80"}, wantErr: "both -udp and -tcp"},
+		{name: "tcp flag with udp preset uses tcp and preset port", args: []string{"-tcp", "-dns", "127.0.0.1"}, check: func(t *testing.T, cfg *models.Config) {
+			if !cfg.IsTCP() || cfg.Port != "53" || cfg.UDPPayload != nil {
+				t.Errorf("proto %q port %q payload %v", cfg.Proto, cfg.Port, cfg.UDPPayload)
+			}
+		}},
+		{name: "positional port overrides preset port", args: []string{"-dns", "127.0.0.1", "5353"}, check: func(t *testing.T, cfg *models.Config) {
+			if cfg.Port != "5353" {
+				t.Errorf("Port = %q", cfg.Port)
+			}
+		}},
+		{name: "no arguments", args: nil, wantErr: "destination host is required"},
+		{name: "unknown flag", args: []string{"-bogus", "127.0.0.1", "80"}, wantErr: "flag provided but not defined"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := parseArgsWith(t, tt.args...)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.check != nil {
+				tt.check(t, cfg)
+			}
+		})
 	}
 }
 

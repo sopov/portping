@@ -22,6 +22,9 @@ func TestIsValidPort(t *testing.T) {
 		{"Invalid port empty", "", false},
 		{"Invalid port with spaces", " 80 ", false},
 		{"Invalid port float", "80.5", false},
+		{"Invalid port plus sign", "+80", false},
+		{"Invalid port hex", "0x50", false},
+		{"Valid port leading zeros", "0080", true},
 	}
 
 	for _, tt := range tests {
@@ -31,6 +34,29 @@ func TestIsValidPort(t *testing.T) {
 				t.Errorf("ValidPort(%q) = %v, expected %v", tt.port, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestNormalizePort(t *testing.T) {
+	tests := []struct {
+		in, want string
+		ok       bool
+	}{
+		{"80", "80", true},
+		{"0080", "80", true},
+		{"65535", "65535", true},
+		{"0", "", false},
+		{"65536", "", false},
+		{"+80", "", false},
+		{"-1", "", false},
+		{" 80", "", false},
+		{"", "", false},
+	}
+	for _, tt := range tests {
+		got, err := NormalizePort(tt.in)
+		if (err == nil) != tt.ok || got != tt.want {
+			t.Errorf("NormalizePort(%q) = %q, %v; want %q, ok=%v", tt.in, got, err, tt.want, tt.ok)
+		}
 	}
 }
 

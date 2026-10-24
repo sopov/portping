@@ -7,9 +7,21 @@ import (
 	"time"
 )
 
+// NormalizePort parses a decimal TCP/UDP port and returns its canonical
+// form ("0080" becomes "80"). Signs, spaces, zero and values above 65535 are
+// rejected.
+func NormalizePort(port string) (string, error) {
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || n == 0 {
+		return "", fmt.Errorf("invalid port `%s`", port)
+	}
+	return strconv.FormatUint(n, 10), nil
+}
+
+// ValidPort reports whether NormalizePort accepts port.
 func ValidPort(port string) bool {
-	i, err := strconv.Atoi(port)
-	return err == nil && i >= 1 && i <= 65535
+	_, err := NormalizePort(port)
+	return err == nil
 }
 
 func IsWindows() bool {

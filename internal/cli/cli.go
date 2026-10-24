@@ -30,12 +30,18 @@ func Parse() (*models.Config, error) {
 	return parseWith(flag.CommandLine, os.Args[1:])
 }
 
+// maxMillis bounds -t and -d: 24 hours, far below the point where the
+// conversion to time.Duration would overflow.
+const maxMillis = 24 * 60 * 60 * 1000
+
 func parseWith(fs *flag.FlagSet, args []string) (*models.Config, error) {
 	cfg := &models.Config{}
 	initFlags(fs, cfg)
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
+	payloadFlagSet := cfg.UDPPayloadHex != ""
+	cfg.Preset = strings.ToLower(cfg.Preset)
 	// tcp/udp
 	if cfgFlags.udp && cfgFlags.tcp {
 		return nil, fmt.Errorf("both -udp and -tcp are set")
@@ -64,12 +70,18 @@ func parseWith(fs *flag.FlagSet, args []string) (*models.Config, error) {
 	if cfg.Proto == models.UDP && cfg.UDPPayloadHex != "" {
 		b, err := hex.DecodeString(cfg.UDPPayloadHex)
 		if err != nil {
-			return nil, errors.New("invalid UDP payload, should be hex string")
+			return nil, fmt.Errorf("invalid UDP payload, should be hex string: %w", err)
+		}
+		if len(b) > probe.MaxUDPPayload {
+			return nil, fmt.Errorf("UDP payload is %d bytes, maximum is %d", len(b), probe.MaxUDPPayload)
 		}
 		cfg.UDPPayload = b
 	}
 
 	if cfg.Proto != models.UDP {
+		if payloadFlagSet {
+			return nil, errors.New("-payload requires UDP (-udp or a UDP preset)")
+		}
 		cfg.UDPPayloadHex = ""
 		cfg.UDPPayload = nil
 	}
@@ -92,7 +104,7 @@ func initFlags(fs *flag.FlagSet, cfg *models.Config) {
 
 	fs.IntVar(&cfg.Timeout, "t", 1000, "Timeout in milliseconds")
 	fs.IntVar(&cfg.Delay, "d", 1000, "Delay in milliseconds")
-	fs.IntVar(&cfg.Count, "c", 0, "Stop after connecting count times")
+	fs.IntVar(&cfg.Count, "c", 0, "Stop after count attempts (0 = run until interrupted)")
 
 	fs.BoolVar(&cfgFlags.v4, "4", false, "Allow IPv4 (default)")
 	fs.BoolVar(&cfgFlags.v6, "6", false, "Allow IPv6")
@@ -240,20 +252,25 @@ func splitDestination(raw string) (host, port string, err error) {
 }
 
 func Validate(cfg *models.Config) error {
-	if len(cfg.Host) < 1 || len(cfg.Port) < 1 {
-		return fmt.Errorf("host or port is required")
+	if cfg.Host == "" {
+		return errors.New("destination host is required")
 	}
-	if !helpers.ValidPort(cfg.Port) {
-		return fmt.Errorf("invalid port `%s`", cfg.Port)
+	if cfg.Port == "" {
+		return errors.New("port is required (second argument, host:port, or a preset)")
 	}
-	if cfg.Timeout < 1 {
-		return fmt.Errorf("timeout must be greater than 0")
+	port, err := helpers.NormalizePort(cfg.Port)
+	if err != nil {
+		return err
 	}
-	if cfg.Delay < 1 {
-		return fmt.Errorf("delay must be greater than 0")
+	cfg.Port = port
+	if cfg.Timeout < 1 || cfg.Timeout > maxMillis {
+		return fmt.Errorf("timeout must be between 1 and %d ms", maxMillis)
+	}
+	if cfg.Delay < 1 || cfg.Delay > maxMillis {
+		return fmt.Errorf("delay must be between 1 and %d ms", maxMillis)
 	}
 	if cfg.Count < 0 {
-		return fmt.Errorf("count must be greater than or equal to 0")
+		return errors.New("count must be greater than or equal to 0")
 	}
 	if cfg.IsUDP() && cfg.UDPPayloadHex == "" && len(cfg.UDPPayload) == 0 {
 		return fmt.Errorf("UDP payload is required for UDP ping")
