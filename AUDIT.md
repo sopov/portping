@@ -20,7 +20,7 @@ Tooling results at baseline:
 | `go test -race ./...` | 8 failures in `internal/cli` when DNS is unavailable (tests resolve `example.com`) |
 | `gofmt -l` | 3 test files not formatted |
 | `golangci-lint run` | refuses to start: `.golangci.yml` is in the v1 format |
-| `govulncheck ./...` | could not run in the audit sandbox (`vuln.go.dev` is not reachable from it); left to CI, see M8 |
+| `govulncheck ./...` | could not run in the audit sandbox (`vuln.go.dev` is not reachable from it); runs in CI, see M8 |
 | `go list -m -u all` | every dependency behind: `fatih/color` 1.18.0 (1.19.0), `go-colorable` 0.1.13 (0.1.16), `go-isatty` 0.0.20 (0.0.24), `x/sys` 0.25.0 (0.49.0) |
 | tracked binaries | none; `dist/` and `*.exe` are ignored and were never committed in any revision |
 | GoReleaser | no configuration exists; releases are built by `make dist` and uploaded with `softprops/action-gh-release` |
@@ -345,12 +345,134 @@ supply-chain weakness), **minor** (correctness or robustness defect with limited
 
 ## 2. Fix status
 
-Filled in after Phase 2, see the commit list below.
+Every blocker and major finding is fixed. Every minor finding that is a correctness or
+security issue is fixed. Nothing was deferred for lack of time; the two items not done in
+this branch could not be done from the audit sandbox and are listed at the end of this
+section.
+
+Checks after the fixes (`go vet`, `go test -race -count=3`, `golangci-lint run` with the
+new configuration, `make dist` for all 34 release targets): clean. The test suite no
+longer opens any connection that leaves the loopback interface and no longer performs any
+DNS lookup.
+
+| Finding | Status | Commit |
+|---|---|---|
+| B1 UDP replies fail on Windows | fixed | `probe: 64 KiB UDP receive buffer, shared probe deadline, cancellation wakes reads` |
+| B2 exit 0 on total failure | fixed | `cli,main: own flag parsing, working help and errors, version flag, exit codes, signal handling` |
+| M1 bare IPv6 literal split as host:port | fixed | `cli,probe: parse IPv6 literals safely, keep zones, ...` |
+| M2 zone identifiers dropped | fixed | same |
+| M3 Ctrl-C ignored during UDP read | fixed | `probe: 64 KiB UDP receive buffer, ...` |
+| M4 colour on non-terminals | fixed | `output: honour terminal detection, ...` |
+| M5 dead help/error paths | fixed | `cli,main: own flag parsing, ...` |
+| M6 unresolvable host is a usage error | fixed | same |
+| M7 tests need Internet | fixed | `probe: ...` (probe tests), `cli,probe: ...` (resolver fake), `tests: loopback-only app and main tests, concurrent-run race test` |
+| M8 lint config unusable, no CI | fixed | `ci: golangci-lint v2 config, CI workflow, release checksums, dependabot, dependency update` |
+| M9 release supply chain | fixed in part | same: checksums, job-level permissions, tests before build, `setup-go@v5` with `go-version-file`, Dependabot. Not done: pinning actions to commit SHAs (see below) |
+| M10 DNS timeout tied to `-t` | fixed | `cli,probe: parse IPv6 literals safely, ...` |
+| m1 `-t`/`-d` overflow | fixed | `cli: bound -t/-d, canonical ports, payload size limit, ...` |
+| m2 unbounded payload | fixed | same |
+| m3 ports accepted verbatim | fixed | same |
+| m4 extra positional arguments | fixed | `cli,probe: parse IPv6 literals safely, ...` |
+| m5 `-payload` ignored in TCP mode | fixed | `cli: bound -t/-d, ...` |
+| m6 `version` scanned from all arguments | fixed | `cli,main: own flag parsing, ...` |
+| m7 case-sensitive presets | fixed | `cli: bound -t/-d, ...` |
+| m8 package-level mutable state | fixed | `cli,main: ...` (private FlagSet), `output: ...` (format cache removed) |
+| m9 UDP timing | fixed | `probe: ...` |
+| m10 min sentinel, 32-bit counters | fixed | `output: ...` |
+| m11 `-c` help text | fixed | `cli: bound -t/-d, ...` |
+| m12 stderr colour | fixed | `output: ...` |
+| m13 dependencies | updated to the newest versions that build with Go 1.25 (`x/sys` 0.49 and `x/tools` current require Go 1.26); `govulncheck` runs in CI | `ci: ...` |
+| m14 Jekyll configuration | fixed | `site,docs: pin Jekyll theme, ...` |
+| m15 README install recipe | fixed | same |
+| m16 `make dist` hides failures | fixed | `ci: ...` |
+| m17 lint findings | fixed | `ci: ...` and later commits |
+| m20 widths follow flag not state | fixed | `output: ...` |
+| m23 SIGTERM exit code | fixed | `cli,main: ...` |
+| m24 UDP semantics undocumented | fixed | `site,docs: ...` |
+| m25 family mismatch message | fixed | `cli,probe: ...` |
+| m26 lexicographic address order | fixed | same |
+
+Not done in this branch:
+
+- **Pinning GitHub Actions to commit SHAs (part of M9).** The audit session could not
+  read the upstream action repositories to obtain and verify the SHAs, and an unverified
+  SHA is worse than a tag. Dependabot now watches the actions; pin them in a follow-up
+  with `pin-github-action` or by hand from the upstream release pages.
+- **`govulncheck` result at baseline (m13).** `vuln.go.dev` was unreachable from the audit
+  sandbox. The CI job runs it on every push; the first run on this branch is the
+  authoritative result.
 
 ## 3. Behavioural changes
 
-Filled in after Phase 2.
+All changes are deliberate consequences of findings; the README lists them for users.
+
+| Change | Finding | Before | After |
+|---|---|---|---|
+| Exit status | B2 | always 0 unless usage error or signal | 1 when any probed address never answered, or on runtime errors such as a failed lookup |
+| Bare IPv6 literal | M1 | `::1 80` probed host `:` port `1`; `::1:80` meant `::1` port 80 | `::1 80` probes `::1`; `::1:80` is the address `::1:80` and needs a port (`[::1]:80`) |
+| Zone identifiers | M2 | silently dropped | kept and used for the dial |
+| Colour | M4 | always on unless `-nocolor`/`NO_COLOR` | on only when stdout is a terminal; `-nocolor` available on Windows too (output there stays uncoloured as before) |
+| `-h` | M5 | flag list on stderr, exit 0 | full usage on stdout, exit 0 |
+| Unknown flag | M5 | Go's default usage on stderr, exit 2 | error line plus usage on stderr, exit 2 |
+| Unresolvable host | M6 | error plus full usage, exit 2 | one line, exit 1 |
+| DNS lookup budget | M10 | `-t` | at least 5 s |
+| `-t`, `-d` | m1 | any positive int | 1 to 86 400 000 ms |
+| UDP payload | m2 | unlimited | at most 65 507 bytes |
+| Port | m3 | `+80`, `0080` accepted and printed as given | `+80` rejected, `0080` printed as `80` |
+| Extra positional arguments | m4 | ignored | error |
+| `-payload` with TCP | m5 | ignored | error |
+| `version` | m6 | matched anywhere in the arguments | `-version` flag, or `version` as the only argument |
+| Preset names | m7 | case-sensitive | case-insensitive |
+| Interrupted probe | M3 | counted as a failure after waiting for the timeout | aborted immediately, not counted |
+| SIGTERM | m23 | exit 130 | exit 143 |
+| Address order | m26 | lexicographic within a family | numeric within a family |
+| Statistics table | m20 | — | no visible change; widths now follow the actual colour state |
+
+Output format (banner, per-probe rows, statistics table) and every existing flag are
+otherwise unchanged.
 
 ## 4. Recommendations beyond this audit
 
-Filled in after Phase 2.
+Not implemented; ordered by value for the effort.
+
+1. **Pin actions to SHAs and adopt GoReleaser with signed, attested releases** (effort:
+   1 day). GoReleaser produces archives, checksums, SBOMs, cosign keyless signatures and
+   SLSA provenance from one config, replaces the hand-maintained release body and the
+   Makefile matrix, and can publish Homebrew/Scoop manifests and deb/rpm via nfpm. The
+   current pipeline uploads bare binaries with a mutable-tag third-party action.
+2. **Machine-readable output** (effort: 1 day). A `-json` mode emitting one object per
+   probe plus a summary object, and a `-q` quiet mode printing only the summary, are the
+   features most often missing when such a tool is used from monitoring or CI. Exit codes
+   now make scripting possible; JSON makes it robust.
+3. **Richer statistics** (effort: half a day). Standard deviation / jitter (`mdev` as in
+   `ping`), percentiles (p50/p95) and the elapsed wall time. The `Stats` struct and the
+   table already isolate this.
+4. **Probe addresses concurrently within a round** (effort: half a day). With `-4 -6` or
+   multi-homed hosts a round currently takes up to `N × -t`; a fan-out with ordered
+   printing keeps a round at one timeout and makes the `-d` interval meaningful.
+5. **Validate UDP replies per preset** (effort: 1 day). Match the DNS transaction ID, the
+   NTP mode and the STUN transaction ID so that an unrelated datagram cannot count as a
+   reply, and report protocol-level errors (for example DNS `REFUSED`) distinctly.
+6. **Flag layer with long names and `ping`-style aliases** (effort: 1 day). `--timeout`,
+   `--interval`, `--count`, `-i`, `-W`, `-w <deadline>`, plus `-4 -6` meaning "both" when
+   given together, with the current short flags kept as aliases. Consider a `-color`
+   flag to force colour when piping into `less -R`.
+7. **Windows colour through `go-colorable`** (effort: 2 hours). Writing through
+   `color.Output` enables colour on Windows 10+ consoles without the global disable.
+8. **Internal architecture** (effort: 1 day). Introduce a `Prober` interface (TCP, UDP,
+   later TLS/HTTP), split `Config` into parsed options and runtime state, drop the
+   duplicated fields in `PingOptions`, and describe presets as data (name, protocol,
+   port, payload, description, reply validator) so the help, README table and tests are
+   generated from one source.
+9. **More presets and probe types** (effort: 2 to 4 hours each). TLS handshake (with
+   certificate expiry in the output), HTTP `HEAD`, QUIC initial, mDNS, SNMP `get`,
+   source-address/interface binding (`-I`), and a randomised probe order for load
+   spreading.
+10. **Fuzz tests** (effort: 1 hour). `splitDestination`, `NormalizePort` and the payload
+    decoder are ideal `testing.F` targets.
+11. **Release process hygiene** (effort: 1 hour). Branch protection requiring the CI
+    workflow, tag protection for `v*`, a `CHANGELOG.md`, and a release checklist that
+    includes running the Windows CI job before tagging.
+12. **Website** (effort: 2 hours). Move site sources into `docs/` so the repository root
+    is not a Jekyll source tree, or replace Jekyll with a static `index.html`; either
+    removes the theme dependency and the exclude list.
