@@ -1,160 +1,234 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"net"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/fatih/color"
 
 	"github.com/sopov/portping/internal/models"
 )
 
-func TestNewApp(t *testing.T) {
-	ctx := context.Background()
-	cfg := &models.Config{
-		IPs: []models.IP{
-			{IP: "192.168.1.1", IsIPv4: true},
-			{IP: "::1", IsIPv4: false},
-		},
-	}
-
-	a := NewApp(ctx, cfg, io.Discard)
-
-	if a == nil {
-		t.Fatal("NewApp() returned nil")
-	}
-	if a.ctx != ctx {
-		t.Error("NewApp() ctx not set correctly")
-	}
-	if a.cfg != cfg {
-		t.Error("NewApp() cfg not set correctly")
-	}
-	if len(a.stats) != 0 {
-		t.Errorf("NewApp() stats should be empty, got %d entries", len(a.stats))
-	}
+func noColor(t *testing.T) {
+	t.Helper()
+	orig := color.NoColor
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = orig })
 }
 
-func TestApp_Ping_TCP(t *testing.T) {
-	ctx := context.Background()
-	cfg := &models.Config{
+// listen returns host and port of a loopback TCP listener that accepts and
+// closes connections.
+func listen(t *testing.T) (string, string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	host, port, _ := net.SplitHostPort(ln.Addr().String())
+	return host, port
+}
+
+// closedPort returns a loopback TCP port that was just released.
+func closedPort(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	_ = ln.Close()
+	return port
+}
+
+func tcpConfig(port string, count int, ips ...models.IP) *models.Config {
+	return &models.Config{
 		Proto:      models.TCP,
-		TimeoutDur: 100 * time.Millisecond,
-	}
-	a := NewApp(ctx, cfg, io.Discard)
-
-	opts := models.PingOptions{
-		Context: ctx,
-		Config:  cfg,
-		Address: "127.0.0.1:99999", // Unreachable port
-	}
-
-	duration, err := a.Ping(opts)
-
-	if duration < 0 {
-		t.Errorf("App.Ping() duration should be >= 0, got %v", duration)
-	}
-	// Expect error for unreachable port
-	if err == nil {
-		t.Error("App.Ping() expected error for unreachable address, got nil")
+		Host:       "127.0.0.1",
+		Port:       port,
+		Count:      count,
+		Nonstop:    count == 0,
+		TimeoutDur: 500 * time.Millisecond,
+		DelayDur:   10 * time.Millisecond,
+		IPs:        ips,
 	}
 }
 
-func TestApp_Ping_UDP(t *testing.T) {
-	ctx := context.Background()
-	cfg := &models.Config{
-		Proto:      models.UDP,
-		TimeoutDur: 1000 * time.Millisecond,
-	}
-	a := NewApp(ctx, cfg, io.Discard)
-
-	opts := models.PingOptions{
-		Context: ctx,
-		Config:  cfg,
-		Address: "127.0.0.1:99999", // Unreachable address
-		Payload: []byte("test"),    // Test payload
-	}
-
-	// PingUDP now requires payload
-	duration, err := a.Ping(opts)
-
-	if duration < 0 {
-		t.Errorf("App.Ping() duration should be >= 0, got %v", duration)
-	}
-	// Expect error for unreachable address or no response
-	if err == nil {
-		t.Error("App.Ping() expected error for unreachable address or no response, got nil")
+func TestNewApp(t *testing.T) {
+	cfg := tcpConfig("80", 1, models.IP{IP: "192.0.2.1", IsIPv4: true})
+	a := NewApp(context.Background(), cfg, io.Discard)
+	if a == nil || a.cfg != cfg || len(a.stats) != 0 {
+		t.Fatalf("NewApp() = %+v", a)
 	}
 }
 
-func TestApp_Run_WithContextCancel(t *testing.T) {
+func TestRun_CountedSuccess(t *testing.T) {
+	noColor(t)
+	host, port := listen(t)
+	cfg := tcpConfig(port, 3, models.IP{IP: host, IsIPv4: true})
+	var out bytes.Buffer
+	a := NewApp(context.Background(), cfg, &out)
+	if err := a.Run(); err != nil {
+		t.Fatal(err)
+	}
+	s := a.Summary()
+	if s.Targets != 1 || s.Attempts != 3 || s.Connects != 3 || s.Failures != 0 || s.Unreached != 0 || !s.AllReached() {
+		t.Errorf("Summary = %+v", s)
+	}
+	text := out.String()
+	if !strings.HasPrefix(text, "Ping of 127.0.0.1 on tcp "+port+" (1 IP)\nIPv4: 127.0.0.1\n") {
+		t.Errorf("banner: %q", text)
+	}
+	if strings.Count(text, "\n  1\t") != 1 || strings.Count(text, "\n  3\t") != 1 || strings.Contains(text, "\n  4\t") {
+		t.Errorf("expected exactly three probe rows:\n%s", text)
+	}
+	if !strings.Contains(text, "Statistics of ping 127.0.0.1 on tcp "+port) {
+		t.Errorf("missing statistics table:\n%s", text)
+	}
+}
+
+func TestRun_AllFailures(t *testing.T) {
+	noColor(t)
+	port := closedPort(t)
+	cfg := tcpConfig(port, 2, models.IP{IP: "127.0.0.1", IsIPv4: true})
+	var out bytes.Buffer
+	a := NewApp(context.Background(), cfg, &out)
+	if err := a.Run(); err != nil {
+		t.Fatal(err)
+	}
+	s := a.Summary()
+	if s.Attempts != 2 || s.Connects != 0 || s.Failures != 2 || s.Unreached != 1 || s.AllReached() {
+		t.Errorf("Summary = %+v", s)
+	}
+	if strings.Count(out.String(), "Err: ") != 2 {
+		t.Errorf("expected two error rows:\n%s", out.String())
+	}
+}
+
+func TestRun_MultipleAddressesPartialFailure(t *testing.T) {
+	noColor(t)
+	host, port := listen(t)
+	// Second address: IPv6 loopback on the same port, which has no listener.
+	// If IPv6 loopback is unavailable the dial fails too, which is the same
+	// outcome for this test.
+	cfg := tcpConfig(port, 2, models.IP{IP: host, IsIPv4: true}, models.IP{IP: "::1"})
+	var out bytes.Buffer
+	a := NewApp(context.Background(), cfg, &out)
+	if err := a.Run(); err != nil {
+		t.Fatal(err)
+	}
+	s := a.Summary()
+	if s.Targets != 2 || s.Attempts != 4 || s.Connects != 2 || s.Unreached != 1 || s.AllReached() {
+		t.Errorf("Summary = %+v", s)
+	}
+	text := out.String()
+	for _, row := range []string{"\n1.1\t", "\n1.2\t", "\n2.1\t", "\n2.2\t"} {
+		if !strings.Contains(text, row) {
+			t.Errorf("missing row %q:\n%s", row, text)
+		}
+	}
+}
+
+func TestRun_CancelDuringDelay(t *testing.T) {
+	host, port := listen(t)
+	cfg := tcpConfig(port, 0, models.IP{IP: host, IsIPv4: true})
+	cfg.DelayDur = 10 * time.Second
 	ctx, cancel := context.WithCancel(context.Background())
-	cfg := &models.Config{
-		IPs: []models.IP{
-			{IP: "127.0.0.1", IsIPv4: true},
-		},
-		Port:       "99999", // Unreachable port for quick timeout
-		Nonstop:    true,
-		TimeoutDur: 100 * time.Millisecond,
-		DelayDur:   50 * time.Millisecond,
-	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
 	a := NewApp(ctx, cfg, io.Discard)
+	start := time.Now()
+	if err := a.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Errorf("Run did not stop on cancel during the delay")
+	}
+	if s := a.Summary(); s.Attempts != 1 || s.Connects != 1 {
+		t.Errorf("Summary = %+v", s)
+	}
+}
 
-	// Cancel context immediately
+func TestRun_CancelBeforeStart(t *testing.T) {
+	host, port := listen(t)
+	cfg := tcpConfig(port, 0, models.IP{IP: host, IsIPv4: true})
+	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-
-	// Run should return quickly due to context cancellation
-	err := a.Run()
-
-	if err != nil {
-		t.Errorf("App.Run() error = %v, expected nil on context cancel", err)
+	a := NewApp(ctx, cfg, io.Discard)
+	if err := a.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if s := a.Summary(); s.Attempts != 0 || s.AllReached() {
+		t.Errorf("Summary = %+v", s)
 	}
 }
 
-func TestApp_Run_WithCount(t *testing.T) {
-	ctx := context.Background()
-	cfg := &models.Config{
-		IPs: []models.IP{
-			{IP: "127.0.0.1", IsIPv4: true},
-		},
-		Port:       "99999", // Unreachable port
-		Count:      2,
-		Nonstop:    false,
-		TimeoutDur: 50 * time.Millisecond,
-		DelayDur:   10 * time.Millisecond,
-	}
-	a := NewApp(ctx, cfg, io.Discard)
-
-	// Run should execute 2 attempts and finish
-	err := a.Run()
-
+func TestRun_InterruptedProbeNotCounted(t *testing.T) {
+	// A UDP probe to a silent listener blocks until cancelled; the
+	// interrupted probe must not appear as a failure.
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
-		t.Errorf("App.Run() error = %v, expected nil", err)
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+	_, port, _ := net.SplitHostPort(pc.LocalAddr().String())
+	cfg := &models.Config{
+		Proto: models.UDP, Host: "127.0.0.1", Port: port, Nonstop: true,
+		TimeoutDur: 10 * time.Second, DelayDur: time.Millisecond,
+		UDPPayload: []byte{1}, IPs: []models.IP{{IP: "127.0.0.1", IsIPv4: true}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	a := NewApp(ctx, cfg, io.Discard)
+	start := time.Now()
+	if err := a.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Error("Run did not stop promptly on cancel")
+	}
+	if s := a.Summary(); s.Attempts != 0 || s.Failures != 0 {
+		t.Errorf("interrupted probe was counted: %+v", s)
 	}
 }
 
-func TestApp_Run_AddressFormat(t *testing.T) {
-	ctx := context.Background()
-	cfg := &models.Config{
-		IPs: []models.IP{
-			{IP: "192.168.1.1", IsIPv4: true},
-			{IP: "::1", IsIPv4: false},
-		},
-		Port:       "80",
-		Count:      1,
-		Nonstop:    false,
-		TimeoutDur: 50 * time.Millisecond,
-		DelayDur:   10 * time.Millisecond,
+func TestRun_ConcurrentAppsAreRaceFree(t *testing.T) {
+	host, port := listen(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cfg := tcpConfig(port, 3, models.IP{IP: host, IsIPv4: true})
+			cfg.DelayDur = time.Millisecond
+			a := NewApp(context.Background(), cfg, io.Discard)
+			if err := a.Run(); err != nil {
+				t.Error(err)
+			}
+			if !a.Summary().AllReached() {
+				t.Error("expected success")
+			}
+		}()
 	}
-	a := NewApp(ctx, cfg, io.Discard)
-
-	// Verify that addresses are formatted correctly
-	err := a.Run()
-
-	if err != nil {
-		t.Errorf("App.Run() error = %v, expected nil", err)
-	}
-	// Verify that stats are created for all IPs
-	if len(a.stats) != len(cfg.IPs) {
-		t.Errorf("App.Run() stats should have %d entries, got %d", len(cfg.IPs), len(a.stats))
-	}
+	wg.Wait()
 }
