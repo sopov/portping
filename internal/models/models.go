@@ -58,6 +58,7 @@ type Config struct {
 	AllowIPv4     bool
 	AllowIPv6     bool
 	NoColor       bool
+	ShowVersion   bool
 	IPs           []IP
 	Preset        string
 	UDPPayloadHex string

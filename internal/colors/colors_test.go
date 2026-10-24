@@ -16,14 +16,14 @@ func TestNoColor(t *testing.T) {
 		t.Error("NoColor(true) should set color.NoColor to true")
 	}
 
-	// Test setting to false
+	// NoColor(false) must not re-enable colour over the terminal detection.
 	NoColor(false)
-	if color.NoColor {
-		t.Error("NoColor(false) should set color.NoColor to false")
+	if !color.NoColor {
+		t.Error("NoColor(false) must not turn colour back on")
 	}
 
 	// Restore original value
-	NoColor(originalValue)
+	color.NoColor = originalValue
 }
 
 func TestColorFunctions(t *testing.T) {

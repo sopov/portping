@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"io"
 	"os"
@@ -569,6 +570,58 @@ func TestParse_Validation(t *testing.T) {
 	}
 }
 
+func TestParseArgs_HelpAndVersion(t *testing.T) {
+	for _, args := range [][]string{{"-h"}, {"-help"}, {"--help"}} {
+		if _, err := ParseArgs(args); !errors.Is(err, flag.ErrHelp) {
+			t.Errorf("ParseArgs(%v) error = %v, want flag.ErrHelp", args, err)
+		}
+	}
+	for _, args := range [][]string{{"-version"}, {"--version"}, {"-version", "ignored"}} {
+		cfg, err := ParseArgs(args)
+		if err != nil || !cfg.ShowVersion {
+			t.Errorf("ParseArgs(%v) = %+v, %v; want ShowVersion", args, cfg, err)
+		}
+	}
+	// A host literally called "version" is a host.
+	cfg, err := ParseArgs([]string{"version", "80"})
+	if err != nil || cfg.ShowVersion || cfg.Host != "version" {
+		t.Errorf("ParseArgs(version 80) = %+v, %v", cfg, err)
+	}
+}
+
+func TestParseArgs_IsReentrant(t *testing.T) {
+	if _, err := ParseArgs([]string{"-dns", "-udp", "127.0.0.1"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ParseArgs([]string{"127.0.0.1", "80"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Preset != "" || !cfg.IsTCP() || cfg.Port != "80" {
+		t.Errorf("state leaked between parses: %+v", cfg)
+	}
+}
+
+func TestResolve_Literal(t *testing.T) {
+	cfg, err := ParseArgs([]string{"-4", "-6", "::1", "80"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.IPs) != 0 {
+		t.Fatalf("ParseArgs must not resolve, got %v", cfg.IPs)
+	}
+	if err := Resolve(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.IPs) != 1 || cfg.IPs[0].IP != "::1" || cfg.IPs[0].IsIPv4 {
+		t.Errorf("IPs = %+v", cfg.IPs)
+	}
+	bad, _ := ParseArgs([]string{"-6", "127.0.0.1", "80"})
+	if err := Resolve(bad); err == nil {
+		t.Error("Resolve(-6 127.0.0.1) expected a family error")
+	}
+}
+
 func TestUsage(t *testing.T) {
 	originalFlagSet := flag.CommandLine
 	defer func() {
@@ -592,6 +645,11 @@ func TestUsage(t *testing.T) {
 	}
 	if !strings.Contains(usage, "port") {
 		t.Error("Usage should contain 'port'")
+	}
+	for _, flagName := range []string{"-t ", "-d ", "-c ", "-preset", "-payload", "-udp", "-tcp", "-4", "-6", "-version", "-dns", "-https"} {
+		if !strings.Contains(usage, flagName) {
+			t.Errorf("Usage should list %q", flagName)
+		}
 	}
 }
 
@@ -724,14 +782,9 @@ func TestValidate_ValidConfig(t *testing.T) {
 		Count:   0,
 	}
 
-	// This test may fail if example.com is unreachable or doesn't resolve
-	err := Validate(cfg)
-	// May get error from probe.GetAddrs, but not from validation
-	if err != nil {
-		// Verify that error is not related to port validation
-		if err.Error() == "invalid port `80`" {
-			t.Errorf("Unexpected validation error: %v", err)
-		}
+	// Validate must not touch the network, so a name is fine here.
+	if err := Validate(cfg); err != nil {
+		t.Errorf("Validate() error = %v, want nil", err)
 	}
 }
 

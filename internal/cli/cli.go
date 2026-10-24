@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"sort"
@@ -26,8 +27,19 @@ var cfgFlags struct {
 	v6  bool
 }
 
+// Parse parses os.Args[1:]. See ParseArgs.
 func Parse() (*models.Config, error) {
-	return parseWith(flag.CommandLine, os.Args[1:])
+	return ParseArgs(os.Args[1:])
+}
+
+// ParseArgs parses command-line arguments into a validated Config. It never
+// prints and never exits: -h/-help yields flag.ErrHelp, every other problem
+// a descriptive error. Name resolution is a separate step, see Resolve.
+func ParseArgs(args []string) (*models.Config, error) {
+	fs := flag.NewFlagSet(app.Name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
+	return parseWith(fs, args)
 }
 
 // maxMillis bounds -t and -d: 24 hours, far below the point where the
@@ -39,6 +51,9 @@ func parseWith(fs *flag.FlagSet, args []string) (*models.Config, error) {
 	initFlags(fs, cfg)
 	if err := fs.Parse(args); err != nil {
 		return nil, err
+	}
+	if cfg.ShowVersion {
+		return cfg, nil
 	}
 	payloadFlagSet := cfg.UDPPayloadHex != ""
 	cfg.Preset = strings.ToLower(cfg.Preset)
@@ -102,6 +117,7 @@ func initFlags(fs *flag.FlagSet, cfg *models.Config) {
 		fs.BoolVar(&cfg.NoColor, "nocolor", false, "Disable color output")
 	}
 
+	fs.BoolVar(&cfg.ShowVersion, "version", false, "Print version and exit")
 	fs.IntVar(&cfg.Timeout, "t", 1000, "Timeout in milliseconds")
 	fs.IntVar(&cfg.Delay, "d", 1000, "Delay in milliseconds")
 	fs.IntVar(&cfg.Count, "c", 0, "Stop after count attempts (0 = run until interrupted)")
@@ -273,8 +289,15 @@ func Validate(cfg *models.Config) error {
 		return errors.New("count must be greater than or equal to 0")
 	}
 	if cfg.IsUDP() && cfg.UDPPayloadHex == "" && len(cfg.UDPPayload) == 0 {
-		return fmt.Errorf("UDP payload is required for UDP ping")
+		return errors.New("UDP payload is required for UDP ping")
 	}
+	return nil
+}
+
+// Resolve fills cfg.IPs from cfg.Host. It is the only step of configuration
+// that touches the network, so callers can report its failures as runtime
+// errors rather than usage errors.
+func Resolve(cfg *models.Config) error {
 	ips, err := probe.GetAddrs(cfg)
 	if err != nil {
 		return err
@@ -295,8 +318,10 @@ func Usage() string {
 	}
 
 	var args bytes.Buffer
-	flag.CommandLine.SetOutput(&args)
-	flag.PrintDefaults()
+	fs := flag.NewFlagSet(app.Name, flag.ContinueOnError)
+	initFlags(fs, &models.Config{})
+	fs.SetOutput(&args)
+	fs.PrintDefaults()
 
 	usage := strings.Join(
 		[]string{

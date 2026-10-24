@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net"
 	"time"
 
@@ -75,6 +76,10 @@ func (a *App) Run() error {
 
 			t, err := a.Ping(opts)
 			cancel()
+			if errors.Is(err, context.Canceled) {
+				// Interrupted mid-probe: not a verdict about the target.
+				return nil
+			}
 
 			stats.Update(a.stats[ip.IP], t, err)
 			sub := idx + 1
@@ -104,6 +109,41 @@ func (a *App) Run() error {
 	return nil
 }
 
+// Summary aggregates the per-address statistics after Run.
+type Summary struct {
+	Targets   int // addresses probed
+	Unreached int // addresses that never answered
+	Attempts  int
+	Connects  int
+	Failures  int
+}
+
+// AllReached reports whether every probed address answered at least once.
+// It is false when nothing was probed at all.
+func (s Summary) AllReached() bool {
+	return s.Targets > 0 && s.Unreached == 0
+}
+
+// Summary returns the aggregated outcome of Run.
+func (a *App) Summary() Summary {
+	var s Summary
+	for _, ip := range a.cfg.IPs {
+		st := a.stats[ip.IP]
+		if st == nil {
+			continue
+		}
+		s.Targets++
+		s.Attempts += st.Attempts
+		s.Connects += st.Connects
+		s.Failures += st.Failures
+		if st.Connects == 0 {
+			s.Unreached++
+		}
+	}
+	return s
+}
+
+// Ping runs one probe according to the configured protocol.
 func (a *App) Ping(opts models.PingOptions) (time.Duration, error) {
 	if a.cfg.IsTCP() {
 		return probe.PingTCP(opts)

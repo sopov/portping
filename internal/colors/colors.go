@@ -13,6 +13,15 @@ var (
 	HGreen = color.New(color.FgHiGreen).SprintFunc()
 )
 
+// NoColor forces colour off when disable is true. It never turns colour on,
+// so the library's terminal detection (and NO_COLOR) stays in effect.
 func NoColor(disable bool) {
-	color.NoColor = disable
+	if disable {
+		color.NoColor = true
+	}
+}
+
+// Err formats an error message for stderr.
+func Err(s string) string {
+	return Red(s)
 }

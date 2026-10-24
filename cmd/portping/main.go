@@ -5,8 +5,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/sopov/portping/internal/app"
@@ -14,51 +16,101 @@ import (
 	"github.com/sopov/portping/internal/colors"
 )
 
+// Exit codes. 0 means every probed address answered at least once.
 const (
-	exitOK       = 0
-	exitUsage    = 2
-	exitRuntime  = 1
-	exitCanceled = 130 // 128+SIGINT
+	exitOK        = 0
+	exitUnreached = 1 // at least one address never answered, or a runtime error
+	exitUsage     = 2 // bad flags or arguments
+	exitSigBase   = 128
 )
 
 func main() {
-	os.Exit(run())
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func run() int {
-	version()
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 1 && args[0] == "version" {
+		printVersion(stdout)
+		return exitOK
+	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	cfg, err := cli.Parse()
+	cfg, err := cli.ParseArgs(args)
+	if errors.Is(err, flag.ErrHelp) {
+		fmt.Fprintln(stdout, cli.Usage())
+		return exitOK
+	}
 	if err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(os.Stdout, cli.Usage())
-			return exitOK
-		}
-		fmt.Fprintln(os.Stderr, colors.Red(err.Error()))
-		fmt.Fprintln(os.Stderr, cli.Usage())
+		fmt.Fprintln(stderr, colors.Err(err.Error()))
+		fmt.Fprintln(stderr, cli.Usage())
 		return exitUsage
 	}
-
-	if err := app.NewApp(ctx, cfg).Run(); err != nil {
-		fmt.Fprintln(os.Stderr, colors.Red(err.Error()))
-		return exitRuntime
+	if cfg.ShowVersion {
+		printVersion(stdout)
+		return exitOK
 	}
 
-	if ctx.Err() != nil {
-		return exitCanceled
+	if err := cli.Resolve(cfg); err != nil {
+		fmt.Fprintln(stderr, colors.Err(err.Error()))
+		return exitUnreached
+	}
+
+	ctx, sig, stop := signalContext(context.Background())
+	defer stop()
+
+	a := app.NewApp(ctx, cfg)
+	if err := a.Run(); err != nil {
+		fmt.Fprintln(stderr, colors.Err(err.Error()))
+		return exitUnreached
+	}
+
+	if s := sig(); s != 0 {
+		return exitSigBase + int(s)
+	}
+	if !a.Summary().AllReached() {
+		return exitUnreached
 	}
 	return exitOK
 }
 
-func version() {
-	flag.Bool("version", false, "Print version and exit")
-	for _, a := range os.Args[1:] {
-		if a == "version" || a == "-version" || a == "--version" {
-			fmt.Fprintf(os.Stdout, "%s %s (%s, %s)\n", app.Name, app.Version, app.Commit, app.BuildDate)
-			os.Exit(exitOK)
+func printVersion(w io.Writer) {
+	fmt.Fprintf(w, "%s %s (%s, %s)\n", app.Name, app.Version, app.Commit, app.BuildDate)
+}
+
+// signalContext returns a context that is cancelled by SIGINT or SIGTERM, a
+// function reporting which signal arrived (0 if none), and a stop function.
+// After the first signal the default disposition is restored, so a second
+// Ctrl-C terminates the process immediately.
+func signalContext(parent context.Context) (context.Context, func() syscall.Signal, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+
+	var (
+		mu  sync.Mutex
+		got syscall.Signal
+	)
+	go func() {
+		select {
+		case s := <-ch:
+			signal.Stop(ch)
+			if ss, ok := s.(syscall.Signal); ok {
+				mu.Lock()
+				got = ss
+				mu.Unlock()
+			}
+			cancel()
+		case <-ctx.Done():
 		}
+	}()
+
+	report := func() syscall.Signal {
+		mu.Lock()
+		defer mu.Unlock()
+		return got
 	}
+	stop := func() {
+		signal.Stop(ch)
+		cancel()
+	}
+	return ctx, report, stop
 }
