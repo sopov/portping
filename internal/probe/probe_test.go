@@ -269,8 +269,10 @@ func TestPingTCP_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PingTCP() error = %v", err)
 	}
-	if d <= 0 || d > 2*time.Second {
-		t.Errorf("PingTCP() duration = %v, want 0 < d <= 2s", d)
+	// Loopback round trips can measure as 0 on coarse monotonic clocks
+	// (Windows), so only the upper bound is meaningful.
+	if d < 0 || d > 2*time.Second {
+		t.Errorf("PingTCP() duration = %v, want 0 <= d <= 2s", d)
 	}
 }
 
@@ -321,8 +323,8 @@ func TestPingUDP_LargeReplyIsSuccess(t *testing.T) {
 		if err != nil {
 			t.Errorf("reply of %d bytes: PingUDP() error = %v", size, err)
 		}
-		if d <= 0 {
-			t.Errorf("reply of %d bytes: duration = %v, want > 0", size, d)
+		if d < 0 || d > 2*time.Second {
+			t.Errorf("reply of %d bytes: duration = %v, want 0 <= d <= 2s", size, d)
 		}
 	}
 }
@@ -365,7 +367,8 @@ func TestPingUDP_NoReplyTimesOut(t *testing.T) {
 	if errors.Is(err, context.Canceled) {
 		t.Errorf("timeout must not be reported as cancellation")
 	}
-	if d < timeout || wall > timeout+2*time.Second {
+	// Allow for coarse clock ticks below the deadline and scheduling above it.
+	if d < timeout-20*time.Millisecond || wall > timeout+2*time.Second {
 		t.Errorf("duration = %v (wall %v), want about %v", d, wall, timeout)
 	}
 }

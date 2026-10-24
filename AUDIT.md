@@ -47,7 +47,8 @@ supply-chain weakness), **minor** (correctness or robustness defect with limited
   probe that *does* get an answer is printed as `Err: wsarecv: A message sent on a datagram
   socket was larger than the internal message buffer ...` and counted as a failure, while a
   silent port looks identical to a dead one. On Linux and macOS the kernel truncates
-  silently, which is why the bug is invisible to the author.
+  silently, which is why the bug is invisible to the author. The fix is confirmed by the
+  Windows CI job, where replies of 2 to 8192 bytes now count as successes.
 - Failure scenario: `portping_windows_amd64.exe -dns 8.8.8.8` reports 100% failure against a
   working resolver.
 - Fix: read into a 64 KiB buffer (the maximum UDP datagram), reused via a `sync.Pool`.
