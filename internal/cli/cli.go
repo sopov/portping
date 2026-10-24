@@ -6,16 +6,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/sopov/portping/internal/app"
-	"github.com/sopov/portping/internal/colors"
-	"github.com/sopov/portping/internal/helpers"
-	"github.com/sopov/portping/internal/models"
-	"github.com/sopov/portping/internal/probe"
 	"net"
 	"os"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sopov/portping/internal/app"
+	"github.com/sopov/portping/internal/colors"
+	"github.com/sopov/portping/internal/helpers"
+	"github.com/sopov/portping/internal/models"
+	"github.com/sopov/portping/internal/probe"
 )
 
 var cfgFlags struct {
@@ -110,7 +111,7 @@ func initFlags(fs *flag.FlagSet, cfg *models.Config) {
 	for _, name := range names {
 		pr := probe.Predefined[name]
 		usage := fmt.Sprintf("Use preset `%s` (%s, port %s)", strings.ToUpper(name), pr.Proto.String(), pr.Port)
-		fs.Bool(name, false, usage) // дефолт и так false, лишний SetDefValue не нужен
+		fs.Bool(name, false, usage)
 	}
 }
 
@@ -294,7 +295,7 @@ func Usage() string {
 }
 
 func presetsHelp() string {
-	var payloads []string
+	payloads := make([]string, 0, len(probe.Predefined))
 	for name := range probe.Predefined {
 		payloads = append(payloads, name)
 	}

@@ -2,9 +2,10 @@ package stats
 
 import (
 	"errors"
-	"github.com/sopov/portping/internal/models"
 	"testing"
 	"time"
+
+	"github.com/sopov/portping/internal/models"
 )
 
 func TestUpdate_Success(t *testing.T) {

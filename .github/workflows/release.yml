@@ -5,27 +5,39 @@ on:
     tags:
       - 'v*.*.*'
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.25.4'
+          go-version-file: go.mod
+      - name: Verify and test
+        run: |
+          go mod verify
+          go vet ./...
+          go test -race -count=1 ./...
       - name: Build binaries
         run: |
           make dist
+      - name: Generate checksums
+        run: |
+          cd dist && sha256sum portping_* > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: Generate release body
         id: release_body
         run: |
           cat > /tmp/release_body.md << 'EOF'
           ## Downloads
-          
+
+          Every file is listed in `SHA256SUMS.txt`. Verify a download with
+          `sha256sum -c --ignore-missing SHA256SUMS.txt`.
+
           ### Linux
           - `portping_linux_amd64` - Linux x86_64
           - `portping_linux_arm64` - Linux ARM64
@@ -36,25 +48,25 @@ jobs:
           - `portping_linux_riscv64` - Linux RISC-V
           - `portping_linux_s390x` - Linux s390x
           - `portping_linux_loong64` - Linux LoongArch
-          
+
           ### macOS
           - `portping_darwin_amd64` - macOS Intel
           - `portping_darwin_arm64` - macOS Apple Silicon
-          
+
           ### Windows
           - `portping_windows_amd64.exe` - Windows x86_64
           - `portping_windows_arm64.exe` - Windows ARM64
           - `portping_windows_386.exe` - Windows x86
-          
+
           ### FreeBSD
           - `portping_freebsd_*` - FreeBSD variants
-          
+
           ### OpenBSD
           - `portping_openbsd_*` - OpenBSD variants
-          
+
           ### NetBSD
           - `portping_netbsd_*` - NetBSD variants
-          
+
           ### DragonFly BSD
           - `portping_dragonfly_amd64` - DragonFly BSD
           EOF
@@ -66,6 +78,7 @@ jobs:
         with:
           files: |
             dist/portping_*
+            dist/SHA256SUMS.txt
           body: ${{ steps.release_body.outputs.body }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

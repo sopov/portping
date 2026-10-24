@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/sopov/portping/internal/models"
 	"net"
 	"time"
+
+	"github.com/sopov/portping/internal/models"
 )
 
 func getIPv4(cfg *models.Config, addr net.IP) (string, bool) {

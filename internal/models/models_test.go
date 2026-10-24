@@ -25,4 +25,3 @@ func TestProto_String(t *testing.T) {
 		})
 	}
 }
-

@@ -2,12 +2,13 @@ package stats
 
 import (
 	"fmt"
-	"github.com/sopov/portping/internal/colors"
-	"github.com/sopov/portping/internal/helpers"
-	"github.com/sopov/portping/internal/models"
 	"sort"
 	"strconv"
 	"time"
+
+	"github.com/sopov/portping/internal/colors"
+	"github.com/sopov/portping/internal/helpers"
+	"github.com/sopov/portping/internal/models"
 )
 
 var (

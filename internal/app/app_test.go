@@ -2,9 +2,10 @@ package app
 
 import (
 	"context"
-	"github.com/sopov/portping/internal/models"
 	"testing"
 	"time"
+
+	"github.com/sopov/portping/internal/models"
 )
 
 func TestNewApp(t *testing.T) {
@@ -69,7 +70,7 @@ func TestApp_Ping_UDP(t *testing.T) {
 		Context: ctx,
 		Config:  cfg,
 		Address: "127.0.0.1:99999", // Unreachable address
-		Payload: []byte("test"),   // Test payload
+		Payload: []byte("test"),    // Test payload
 	}
 
 	// PingUDP now requires payload
@@ -90,10 +91,10 @@ func TestApp_Run_WithContextCancel(t *testing.T) {
 		IPs: []models.IP{
 			{IP: "127.0.0.1", IsIPv4: true},
 		},
-		Port:      "99999", // Unreachable port for quick timeout
-		Nonstop:   true,
+		Port:       "99999", // Unreachable port for quick timeout
+		Nonstop:    true,
 		TimeoutDur: 100 * time.Millisecond,
-		DelayDur:  50 * time.Millisecond,
+		DelayDur:   50 * time.Millisecond,
 	}
 	a := NewApp(ctx, cfg)
 
@@ -156,4 +157,3 @@ func TestApp_Run_AddressFormat(t *testing.T) {
 		t.Errorf("App.Run() stats should have %d entries, got %d", len(cfg.IPs), len(a.stats))
 	}
 }
-

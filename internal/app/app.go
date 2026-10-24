@@ -2,11 +2,12 @@ package app
 
 import (
 	"context"
+	"net"
+	"time"
+
 	"github.com/sopov/portping/internal/models"
 	"github.com/sopov/portping/internal/probe"
 	"github.com/sopov/portping/internal/stats"
-	"net"
-	"time"
 )
 
 const Name = "portping"
@@ -56,10 +57,7 @@ func (a *App) Run() error {
 	}
 	defer timer.Stop()
 
-	for {
-		if !a.cfg.Nonstop && attempt >= a.cfg.Count {
-			break
-		}
+	for a.cfg.Nonstop || attempt < a.cfg.Count {
 		attempt++
 		batchStart := time.Now()
 

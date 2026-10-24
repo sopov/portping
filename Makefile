@@ -26,7 +26,7 @@ DOCKER_RUN     = docker run --rm -v "$$(pwd)":/src -w /src -e CGO_ENABLED=0 $(DO
 
 # crossbuild
 define CROSS_BUILD_SCRIPT
-set +e; mkdir -p $(OUT); \
+set +e; mkdir -p $(OUT); FAILED=""; \
 PLATFORMS=$$(go tool dist list | grep -E '^(linux|windows|darwin|freebsd|openbsd|netbsd|dragonfly)/'); \
 while IFS='/' read -r GOOS GOARCH; do \
   EXT=$$( [ "$$GOOS" = "windows" ] && echo .exe || true ); \
@@ -35,9 +35,10 @@ while IFS='/' read -r GOOS GOARCH; do \
   if GOOS=$$GOOS GOARCH=$$GOARCH CGO_ENABLED=0 $(BUILD_CMD) $$OUTBIN $(MAIN); then \
     :; \
   else \
-    echo ">> skipped $$OUTBIN (build failed, may require CGO)"; \
+    echo ">> FAILED $$OUTBIN"; FAILED="$$FAILED $$GOOS/$$GOARCH"; \
   fi; \
-done <<< "$$PLATFORMS"
+done <<< "$$PLATFORMS"; \
+if [ -n "$$FAILED" ]; then echo ">> build failed for:$$FAILED"; exit 1; fi
 endef
 export CROSS_BUILD_SCRIPT
 
@@ -63,6 +64,13 @@ vet: ## go vet
 .PHONY: test
 test: ## Run tests with race
 	@go test $(GOFLAGS) -race ./...
+
+.PHONY: vuln
+vuln: ## govulncheck
+	@govulncheck ./...
+
+.PHONY: check
+check: vet lint test ## vet + lint + test
 
 .PHONY: build
 build: ## Build local binary

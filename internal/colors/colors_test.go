@@ -1,8 +1,9 @@
 package colors
 
 import (
-	"github.com/fatih/color"
 	"testing"
+
+	"github.com/fatih/color"
 )
 
 func TestNoColor(t *testing.T) {
@@ -51,4 +52,3 @@ func TestColorFunctions(t *testing.T) {
 		})
 	}
 }
-

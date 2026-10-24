@@ -3,10 +3,11 @@ package probe
 import (
 	"context"
 	"encoding/hex"
-	"github.com/sopov/portping/internal/models"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/sopov/portping/internal/models"
 )
 
 func TestGetIPv4(t *testing.T) {

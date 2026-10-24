@@ -5,12 +5,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/sopov/portping/internal/app"
-	"github.com/sopov/portping/internal/cli"
-	"github.com/sopov/portping/internal/colors"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/sopov/portping/internal/app"
+	"github.com/sopov/portping/internal/cli"
+	"github.com/sopov/portping/internal/colors"
 )
 
 const (
@@ -21,7 +22,10 @@ const (
 )
 
 func main() {
+	os.Exit(run())
+}
 
+func run() int {
 	version()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -31,21 +35,22 @@ func main() {
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(os.Stdout, cli.Usage())
-			os.Exit(exitOK)
+			return exitOK
 		}
 		fmt.Fprintln(os.Stderr, colors.Red(err.Error()))
 		fmt.Fprintln(os.Stderr, cli.Usage())
-		os.Exit(exitUsage)
+		return exitUsage
 	}
 
 	if err := app.NewApp(ctx, cfg).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, colors.Red(err.Error()))
-		os.Exit(exitRuntime)
+		return exitRuntime
 	}
 
 	if ctx.Err() != nil {
-		os.Exit(exitCanceled)
+		return exitCanceled
 	}
+	return exitOK
 }
 
 func version() {

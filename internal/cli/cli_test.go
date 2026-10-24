@@ -2,13 +2,14 @@ package cli
 
 import (
 	"flag"
-	"github.com/sopov/portping/internal/app"
-	"github.com/sopov/portping/internal/models"
-	"github.com/sopov/portping/internal/probe"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sopov/portping/internal/app"
+	"github.com/sopov/portping/internal/models"
+	"github.com/sopov/portping/internal/probe"
 )
 
 func TestParseStrings(t *testing.T) {
