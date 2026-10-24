@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"time"
 
@@ -17,23 +18,29 @@ var Version = "dev"
 var Commit = ""
 var BuildDate = ""
 
+// App runs the probe loop for one configuration.
 type App struct {
 	ctx   context.Context
 	cfg   *models.Config
+	out   io.Writer
 	stats map[string]*models.Stats
 }
 
-func NewApp(ctx context.Context, cfg *models.Config) *App {
+// NewApp creates an App that writes its report to out.
+func NewApp(ctx context.Context, cfg *models.Config, out io.Writer) *App {
 	return &App{
 		ctx:   ctx,
 		cfg:   cfg,
+		out:   out,
 		stats: make(map[string]*models.Stats, len(cfg.IPs)),
 	}
 }
 
+// Run probes every address cfg.Count times (forever when Nonstop) and prints
+// the statistics table when it returns, also on cancellation.
 func (a *App) Run() error {
-	defer stats.ShowStats(a.cfg, a.stats)
-	stats.ShowBanner(a.cfg)
+	defer stats.ShowStats(a.out, a.cfg, a.stats)
+	stats.ShowBanner(a.out, a.cfg)
 
 	pingOpts := make(map[string]models.PingOptions, len(a.cfg.IPs))
 	maxIPLen := 0
@@ -51,14 +58,14 @@ func (a *App) Run() error {
 	}
 	singleIP := len(a.cfg.IPs) == 1
 
-	var attempt int
+	var attempt int64
 	timer := time.NewTimer(0)
 	if !timer.Stop() {
 		<-timer.C
 	}
 	defer timer.Stop()
 
-	for a.cfg.Nonstop || attempt < a.cfg.Count {
+	for a.cfg.Nonstop || attempt < int64(a.cfg.Count) {
 		attempt++
 		batchStart := time.Now()
 
@@ -82,13 +89,13 @@ func (a *App) Run() error {
 			}
 
 			stats.Update(a.stats[ip.IP], t, err)
-			sub := idx + 1
+			sub := int64(idx + 1)
 			if singleIP {
 				sub = 0
 			}
-			stats.ShowCurrent(a.cfg, attempt, sub, ip.IP, maxIPLen, t, err)
+			stats.ShowCurrent(a.out, attempt, sub, ip.IP, maxIPLen, t, err)
 		}
-		if a.cfg.Nonstop || attempt < a.cfg.Count {
+		if a.cfg.Nonstop || attempt < int64(a.cfg.Count) {
 			if since := time.Since(batchStart); since < a.cfg.DelayDur {
 				wait := a.cfg.DelayDur - since
 				if !timer.Stop() {
@@ -113,9 +120,9 @@ func (a *App) Run() error {
 type Summary struct {
 	Targets   int // addresses probed
 	Unreached int // addresses that never answered
-	Attempts  int
-	Connects  int
-	Failures  int
+	Attempts  int64
+	Connects  int64
+	Failures  int64
 }
 
 // AllReached reports whether every probed address answered at least once.

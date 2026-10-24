@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"io"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ func TestNewApp(t *testing.T) {
 		},
 	}
 
-	a := NewApp(ctx, cfg)
+	a := NewApp(ctx, cfg, io.Discard)
 
 	if a == nil {
 		t.Fatal("NewApp() returned nil")
@@ -39,7 +40,7 @@ func TestApp_Ping_TCP(t *testing.T) {
 		Proto:      models.TCP,
 		TimeoutDur: 100 * time.Millisecond,
 	}
-	a := NewApp(ctx, cfg)
+	a := NewApp(ctx, cfg, io.Discard)
 
 	opts := models.PingOptions{
 		Context: ctx,
@@ -64,7 +65,7 @@ func TestApp_Ping_UDP(t *testing.T) {
 		Proto:      models.UDP,
 		TimeoutDur: 1000 * time.Millisecond,
 	}
-	a := NewApp(ctx, cfg)
+	a := NewApp(ctx, cfg, io.Discard)
 
 	opts := models.PingOptions{
 		Context: ctx,
@@ -96,7 +97,7 @@ func TestApp_Run_WithContextCancel(t *testing.T) {
 		TimeoutDur: 100 * time.Millisecond,
 		DelayDur:   50 * time.Millisecond,
 	}
-	a := NewApp(ctx, cfg)
+	a := NewApp(ctx, cfg, io.Discard)
 
 	// Cancel context immediately
 	cancel()
@@ -121,7 +122,7 @@ func TestApp_Run_WithCount(t *testing.T) {
 		TimeoutDur: 50 * time.Millisecond,
 		DelayDur:   10 * time.Millisecond,
 	}
-	a := NewApp(ctx, cfg)
+	a := NewApp(ctx, cfg, io.Discard)
 
 	// Run should execute 2 attempts and finish
 	err := a.Run()
@@ -144,7 +145,7 @@ func TestApp_Run_AddressFormat(t *testing.T) {
 		TimeoutDur: 50 * time.Millisecond,
 		DelayDur:   10 * time.Millisecond,
 	}
-	a := NewApp(ctx, cfg)
+	a := NewApp(ctx, cfg, io.Discard)
 
 	// Verify that addresses are formatted correctly
 	err := a.Run()

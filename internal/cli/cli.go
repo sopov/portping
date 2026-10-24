@@ -105,17 +105,19 @@ func parseWith(fs *flag.FlagSet, args []string) (*models.Config, error) {
 	cfg.DelayDur = time.Duration(cfg.Delay) * time.Millisecond
 	cfg.Nonstop = cfg.Count == 0 // boolean flag for nonstop mode
 
-	colors.NoColor(cfg.NoColor)
+	// Colour is on only when stdout is a terminal (decided by the colour
+	// library at start-up); the flag, NO_COLOR and Windows consoles turn it
+	// off. cfg.NoColor reflects the final state.
+	if cfg.NoColor || helpers.IsWindows() {
+		colors.Disable()
+	}
+	cfg.NoColor = !colors.Enabled()
 
 	return cfg, Validate(cfg)
 }
 
 func initFlags(fs *flag.FlagSet, cfg *models.Config) {
-	if helpers.IsWindows() {
-		cfg.NoColor = true
-	} else {
-		fs.BoolVar(&cfg.NoColor, "nocolor", false, "Disable color output")
-	}
+	fs.BoolVar(&cfg.NoColor, "nocolor", false, "Disable color output")
 
 	fs.BoolVar(&cfg.ShowVersion, "version", false, "Print version and exit")
 	fs.IntVar(&cfg.Timeout, "t", 1000, "Timeout in milliseconds")

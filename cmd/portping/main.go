@@ -57,7 +57,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	ctx, sig, stop := signalContext(context.Background())
 	defer stop()
 
-	a := app.NewApp(ctx, cfg)
+	a := app.NewApp(ctx, cfg, stdout)
 	if err := a.Run(); err != nil {
 		fmt.Fprintln(stderr, colors.Err(err.Error()))
 		return exitUnreached

@@ -68,11 +68,13 @@ type Config struct {
 func (c *Config) IsUDP() bool { return c.Proto == UDP }
 func (c *Config) IsTCP() bool { return c.Proto == TCP }
 
+// Stats holds the counters for one address. The counters are int64 so that
+// long-running continuous mode cannot overflow on 32-bit builds.
 type Stats struct {
 	IP       IP
-	Attempts int
-	Connects int
-	Failures int
+	Attempts int64
+	Connects int64
+	Failures int64
 	Minimum  time.Duration
 	Maximum  time.Duration
 	Total    time.Duration

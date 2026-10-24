@@ -1,8 +1,10 @@
+// Package stats prints the banner, per-probe lines and the final table, and
+// maintains the per-address counters.
 package stats
 
 import (
 	"fmt"
-	"sort"
+	"io"
 	"strconv"
 	"time"
 
@@ -11,16 +13,14 @@ import (
 	"github.com/sopov/portping/internal/models"
 )
 
-var (
-	okFmt, errFmt string
-)
-
-func ShowBanner(cfg *models.Config) {
+// ShowBanner prints the header: target, protocol, port, resolved addresses
+// and, for UDP, the payload.
+func ShowBanner(w io.Writer, cfg *models.Config) {
 	ipSuffix := "IP"
 	if len(cfg.IPs) > 1 {
 		ipSuffix += "s"
 	}
-	fmt.Printf("Ping of %s on %s %s (%d %s)\n",
+	fmt.Fprintf(w, "Ping of %s on %s %s (%d %s)\n",
 		colors.HYellow(cfg.Host),
 		colors.HYellow(cfg.Proto),
 		colors.HYellow(cfg.Port),
@@ -33,45 +33,39 @@ func ShowBanner(cfg *models.Config) {
 		if ip.IsIPv6() {
 			t = "IPv6"
 		}
-
-		fmt.Printf("%s: %s\n", t, colors.HYellow(ip.IP))
+		fmt.Fprintf(w, "%s: %s\n", t, colors.HYellow(ip.IP))
 	}
 
 	if cfg.IsUDP() {
-		fmt.Printf("Payload (hex): %s\n", colors.HYellow(cfg.UDPPayloadHex))
+		fmt.Fprintf(w, "Payload (hex): %s\n", colors.HYellow(cfg.UDPPayloadHex))
 	}
-
 }
 
-func ShowStats(cfg *models.Config, statsMap map[string]*models.Stats) {
+// ShowStats prints the final table. Addresses without attempts are omitted.
+func ShowStats(w io.Writer, cfg *models.Config, statsMap map[string]*models.Stats) {
 	if len(statsMap) == 0 {
 		return
 	}
 
-	keys := make([]string, 0, len(statsMap))
-	for ip := range statsMap {
-		keys = append(keys, ip)
-	}
-	sort.Strings(keys)
-
 	var maxLen int
-	for _, ip := range keys {
-		if l := len(ip); l > maxLen {
+	for _, ip := range cfg.IPs {
+		if l := len(ip.IP); l > maxLen {
 			maxLen = l
 		}
 	}
 
-	format := "% " + strconv.Itoa(maxLen+10) + "s% 12s% 21s % 24s% 10s %10s  %10s\n"
-	if cfg.NoColor {
-		format = "% " + strconv.Itoa(maxLen+1) + "s% 12s% 11s % 15s% 10s %10s  %10s\n"
+	// Column widths include the ANSI sequences when colour is on.
+	format := "% " + strconv.Itoa(maxLen+1) + "s% 12s% 11s % 15s% 10s %10s  %10s\n"
+	if colors.Enabled() {
+		format = "% " + strconv.Itoa(maxLen+10) + "s% 12s% 21s % 24s% 10s %10s  %10s\n"
 	}
-	fmt.Printf(
+	fmt.Fprintf(w,
 		"\nStatistics of ping %s on %s %s\n",
 		colors.HYellow(cfg.Host),
 		colors.HYellow(cfg.Proto),
 		colors.HYellow(cfg.Port))
 
-	fmt.Printf(format,
+	fmt.Fprintf(w, format,
 		colors.Yellow("IP Address"),
 		"Attempted",
 		colors.Green("Connected"),
@@ -86,44 +80,37 @@ func ShowStats(cfg *models.Config, statsMap map[string]*models.Stats) {
 		if st == nil || st.Attempts == 0 {
 			continue
 		}
-		var avg time.Duration
-		if st.Connects > 0 {
-			avg = time.Duration(float64(st.Total) / float64(st.Connects))
-		}
-
-		fmt.Printf(
+		fmt.Fprintf(w,
 			format,
-			colors.HYellow(ip.IP),                    // IP
-			strconv.Itoa(st.Attempts),                // Attempts
-			colors.HGreen(strconv.Itoa(st.Connects)), // Connected
-			fmt.Sprintf("%s % 6s", // Failed
-				colors.HRed(strconv.Itoa(st.Failures)),
-				fmt.Sprintf("(%.2f%%)", 100*float64(st.Failures)/float64(st.Attempts))),
+			colors.HYellow(ip.IP),
+			strconv.FormatInt(st.Attempts, 10),
+			colors.HGreen(strconv.FormatInt(st.Connects, 10)),
+			fmt.Sprintf("%s % 6s",
+				colors.HRed(strconv.FormatInt(st.Failures, 10)),
+				fmt.Sprintf("(%.2f%%)", LossPercent(st))),
 			helpers.DurStr(st.Minimum),
 			helpers.DurStr(st.Maximum),
-			helpers.DurStr(avg),
+			helpers.DurStr(Average(st)),
 		)
 	}
 }
 
-func showCurrentFmt(cfg *models.Config, maxIPLen int, ok bool) string {
-	if okFmt == "" {
-		postMsgLen := "19"
-		if cfg.NoColor {
-			postMsgLen = "10"
-		}
-		okFmt = "% 3s\t%" + strconv.Itoa(maxIPLen) + "s\t%" + postMsgLen + "s"
-		errFmt = okFmt + "\tErr: %s\n"
-		okFmt += "%s\n"
+// rowFormat builds the per-probe line format for the given address width.
+func rowFormat(maxIPLen int, ok bool) string {
+	postMsgLen := "10"
+	if colors.Enabled() {
+		postMsgLen = "19"
 	}
-
+	f := "% 3s\t%" + strconv.Itoa(maxIPLen) + "s\t%" + postMsgLen + "s"
 	if ok {
-		return okFmt
+		return f + "%s\n"
 	}
-	return errFmt
+	return f + "\tErr: %s\n"
 }
 
-func ShowCurrent(cfg *models.Config, cnt, subcnt int, ip string, maxIPLen int, duration time.Duration, err error) {
+// ShowCurrent prints one probe result. subcnt > 0 renders "cnt.subcnt" for
+// multi-address targets.
+func ShowCurrent(w io.Writer, cnt, subcnt int64, ip string, maxIPLen int, duration time.Duration, err error) {
 	errMsg := ""
 	durStr := helpers.DurStr(duration)
 	if err != nil {
@@ -132,12 +119,12 @@ func ShowCurrent(cfg *models.Config, cnt, subcnt int, ip string, maxIPLen int, d
 	} else {
 		durStr = colors.HGreen(durStr)
 	}
-	attempt := strconv.Itoa(cnt)
+	attempt := strconv.FormatInt(cnt, 10)
 	if subcnt > 0 {
-		attempt += "." + strconv.Itoa(subcnt)
+		attempt += "." + strconv.FormatInt(subcnt, 10)
 	}
-	fmt.Printf(
-		showCurrentFmt(cfg, maxIPLen, err == nil),
+	fmt.Fprintf(w,
+		rowFormat(maxIPLen, err == nil),
 		attempt,
 		ip,
 		durStr,
@@ -145,6 +132,7 @@ func ShowCurrent(cfg *models.Config, cnt, subcnt int, ip string, maxIPLen int, d
 	)
 }
 
+// Update records one probe result.
 func Update(stats *models.Stats, duration time.Duration, err error) {
 	stats.Attempts++
 	if err != nil {
@@ -155,10 +143,26 @@ func Update(stats *models.Stats, duration time.Duration, err error) {
 	stats.Connects++
 	stats.Total += duration
 
-	if float64(stats.Minimum) == 0 || stats.Minimum > duration {
+	if stats.Connects == 1 || duration < stats.Minimum {
 		stats.Minimum = duration
 	}
-	if stats.Maximum < duration {
+	if duration > stats.Maximum {
 		stats.Maximum = duration
 	}
+}
+
+// Average is the mean round-trip time of successful probes, 0 without any.
+func Average(st *models.Stats) time.Duration {
+	if st.Connects == 0 {
+		return 0
+	}
+	return st.Total / time.Duration(st.Connects)
+}
+
+// LossPercent is the share of failed attempts in percent, 0 without attempts.
+func LossPercent(st *models.Stats) float64 {
+	if st.Attempts == 0 {
+		return 0
+	}
+	return 100 * float64(st.Failures) / float64(st.Attempts)
 }
